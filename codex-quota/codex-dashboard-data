@@ -202,6 +202,14 @@ def _calendar_months(
             month_start.year == today.year
             and month_start.month == today.month
         ) else days_in_month
+
+        def tokens_for_day(day: int) -> int | None:
+            date = dt.date(month_start.year, month_start.month, day)
+            key = date.isoformat()
+            if key in totals:
+                return totals[key]
+            return None if date == today else 0
+
         months.append({
             "key": month_start.strftime("%Y-%m"),
             "label": calendar.month_name[month_start.month],
@@ -210,14 +218,7 @@ def _calendar_months(
             "days": [
                 {
                     "day": day,
-                    "tokens": totals.get(
-                        dt.date(
-                            month_start.year,
-                            month_start.month,
-                            day,
-                        ).isoformat(),
-                        0,
-                    ),
+                    "tokens": tokens_for_day(day),
                 }
                 for day in range(1, last_day + 1)
             ],
@@ -281,15 +282,29 @@ class OfficialTokenActivity:
             if parsed_day <= today:
                 totals[parsed_day.isoformat()] += int(tokens)
 
+        current_day_available = today.isoformat() in totals
         daily = []
         for offset in range(HISTORY_DAYS - 1, -1, -1):
             day = today - dt.timedelta(days=offset)
+            key = day.isoformat()
             daily.append({
-                "date": day.isoformat(),
-                "tokens": totals.get(day.isoformat(), 0),
+                "date": key,
+                "tokens": (
+                    totals[key]
+                    if key in totals
+                    else None
+                    if day == today
+                    else 0
+                ),
             })
         latest_bucket_date = max(totals, default=None)
-        current_day_available = today.isoformat() in totals
+
+        def known_total(items: list[dict[str, Any]]) -> int:
+            return sum(
+                item["tokens"]
+                for item in items
+                if isinstance(item.get("tokens"), int)
+            )
 
         def summary_tokens(key: str) -> int | None:
             value = summary.get(key)
@@ -304,8 +319,8 @@ class OfficialTokenActivity:
 
         return {
             "today": daily[-1]["tokens"],
-            "seven_days": sum(item["tokens"] for item in daily[-7:]),
-            "ninety_days": sum(item["tokens"] for item in daily[-90:]),
+            "seven_days": known_total(daily[-7:]),
+            "ninety_days": known_total(daily[-90:]),
             "lifetime": summary_tokens("lifetimeTokens"),
             "peak_daily": summary_tokens("peakDailyTokens"),
             "latest_bucket_date": latest_bucket_date,
@@ -548,7 +563,7 @@ def main() -> int:
     quota_state = quota_availability(quota)
 
     unavailable_usage = {
-        "today": 0,
+        "today": None,
         "seven_days": 0,
         "ninety_days": 0,
         "days": [],

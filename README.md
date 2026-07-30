@@ -3,7 +3,7 @@
 A small, local-first GNOME Shell 50 extension that shows:
 
 - the current Codex quota;
-- official 7-day and 90-day token activity;
+- official Today, 7-day, and 90-day token activity;
 - five recent terminal tasks, one concise sentence per root Codex session.
 
 Task titles keep the user's language and wording. There is no fixed task
@@ -13,20 +13,26 @@ catalogue, translation, or model-generated summary.
 
 ## Install
 
-Requirements: GNOME Shell 50, Python 3.11+, Codex CLI, `systemd --user`,
-PyGObject, and dbus-python.
+Requirements: GNOME Shell 50, `/usr/bin/python3` 3.11+, Codex CLI,
+`systemd --user`, GJS, PyGObject, and dbus-python.
 
 ```sh
-sudo apt install python3-dbus python3-gi
+sudo apt install gjs python3-dbus python3-gi
 git clone https://github.com/wenbo-wei/codex-dashboard.git
 cd codex-dashboard
 ./scripts/install.sh
 ```
 
 The extension UUID is `codex-dashboard@wenbo-wei`. The installer automatically
-migrates the old local UUID if it is present. If the current Shell session has
-not discovered the new UUID yet, the old extension is preserved and the
-installer asks you to sign in again before rerunning it.
+migrates the old local UUID if it is present. On a clean installation, a Shell
+session that has not discovered the new UUID yet is queued to enable it at the
+next login; the installer does not need to be rerun. When an old UUID is still
+installed, it is preserved until the new UUID is live-discovered; the installer
+then asks you to sign in again and rerun it to finish that safe migration.
+Extension, icon, and user-unit files respect `XDG_DATA_HOME` and
+`XDG_CONFIG_HOME` when those variables are set.
+If a later installation step fails, the installer restores the prior files,
+GNOME extension lists, shared icon cache, and user-service state.
 
 ## How it works
 
@@ -36,6 +42,11 @@ installer asks you to sign in again before rerunning it.
 - `codex-quota` publishes live quota state for the extension.
 - Official token and quota data come from the locally installed Codex CLI
   app-server.
+
+If the official service has not published today's bucket yet, Today and the
+current calendar day show **Pending** rather than a misleading zero. An
+explicitly published zero remains `0`, and known 7-day and 90-day totals remain
+available.
 
 Subagents, archived sessions, injected instructions, skill prefixes, and image
 placeholders are excluded from task rows. No session text is uploaded by this
@@ -51,7 +62,7 @@ project and no model request is made to generate task titles.
 ## Update or remove
 
 ```sh
-git pull
+git pull --ff-only
 ./scripts/install.sh
 ```
 
@@ -63,9 +74,11 @@ sign out and back in when convenient.
 ```
 
 Uninstalling does not delete Codex sessions, account data, configuration, or
-the Codex CLI.
+the Codex CLI. It also retires a queued UUID that the current Shell has not
+discovered yet.
 
-For a basic source syntax check, run `make check`.
+Run `make check` for source checks and focused regression tests. The settings
+test uses an isolated GSettings backend and never writes the user's dconf.
 
 ## License
 

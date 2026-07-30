@@ -1,0 +1,127 @@
+#!/bin/sh
+set -u
+
+if [ "${1:-}" = "--user" ]; then
+    shift
+fi
+
+state_dir=${FAKE_SYSTEMCTL_STATE_DIR:-}
+unit_path=${FAKE_SYSTEMCTL_UNIT_PATH:-}
+if [ -z "$state_dir" ] || [ -z "$unit_path" ]; then
+    echo "fake systemctl state is not configured" >&2
+    exit 64
+fi
+
+enabled_state_file="$state_dir/enabled-state"
+active_state_file="$state_dir/active-state"
+calls_log="$state_dir/calls.log"
+loaded_unit="$state_dir/loaded-unit"
+action=${1:-}
+if [ "$#" -gt 0 ]; then
+    shift
+fi
+
+printf '%s' "$action" >>"$calls_log"
+for argument in "$@"; do
+    printf ' %s' "$argument" >>"$calls_log"
+done
+printf '\n' >>"$calls_log"
+
+classify_unit_file() {
+    if [ ! -e "$unit_path" ] && [ ! -L "$unit_path" ]; then
+        printf '%s\n' not-found
+    elif grep -q '^\[Install\]$' "$unit_path"; then
+        printf '%s\n' disabled
+    else
+        printf '%s\n' static
+    fi
+}
+
+case "$action" in
+    is-enabled)
+        if [ "${FAKE_SYSTEMCTL_FAIL_IS_ENABLED:-}" = 1 ]; then
+            exit 5
+        fi
+        enabled_state=$(cat "$enabled_state_file")
+        printf '%s\n' "$enabled_state"
+        if [ -n "${FAKE_SYSTEMCTL_IS_ENABLED_EXIT:-}" ]; then
+            exit "$FAKE_SYSTEMCTL_IS_ENABLED_EXIT"
+        fi
+        case "$enabled_state" in
+            enabled | static)
+                exit 0
+                ;;
+            disabled)
+                exit 1
+                ;;
+            not-found)
+                exit 4
+                ;;
+            *)
+                exit 5
+                ;;
+        esac
+        ;;
+    is-active)
+        if [ "${FAKE_SYSTEMCTL_FAIL_IS_ACTIVE:-}" = 1 ]; then
+            exit 5
+        fi
+        active_state=$(cat "$active_state_file")
+        printf '%s\n' "$active_state"
+        if [ -n "${FAKE_SYSTEMCTL_IS_ACTIVE_EXIT:-}" ]; then
+            exit "$FAKE_SYSTEMCTL_IS_ACTIVE_EXIT"
+        fi
+        case "$active_state" in
+            active)
+                exit 0
+                ;;
+            inactive)
+                exit 3
+                ;;
+            failed)
+                exit 3
+                ;;
+            *)
+                exit 5
+                ;;
+        esac
+        ;;
+    daemon-reload)
+        enabled_state=$(cat "$enabled_state_file")
+        if [ "$enabled_state" != enabled ]; then
+            classify_unit_file >"$enabled_state_file"
+        fi
+        rm -f -- "$loaded_unit"
+        if [ -e "$unit_path" ] || [ -L "$unit_path" ]; then
+            cp -a -- "$unit_path" "$loaded_unit"
+        fi
+        ;;
+    enable)
+        printf '%s\n' enabled >"$enabled_state_file"
+        ;;
+    disable)
+        classify_unit_file >"$enabled_state_file"
+        for argument in "$@"; do
+            if [ "$argument" = "--now" ]; then
+                printf '%s\n' inactive >"$active_state_file"
+            fi
+        done
+        ;;
+    start)
+        printf '%s\n' active >"$active_state_file"
+        ;;
+    stop)
+        printf '%s\n' inactive >"$active_state_file"
+        ;;
+    restart)
+        printf '%s\n' inactive >"$active_state_file"
+        if [ "${FAKE_SYSTEMCTL_FAIL_RESTART:-}" = 1 ]; then
+            exit 1
+        fi
+        printf '%s\n' active >"$active_state_file"
+        ;;
+    *)
+        echo "unsupported fake systemctl action: $action" >&2
+        exit 64
+        ;;
+esac

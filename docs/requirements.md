@@ -9,6 +9,9 @@ This document records the current product constraints.
   local UUID so only one dashboard remains enabled.
 - The dashboard continues to show the live Codex quota and official token
   activity already provided by the installed version.
+- A missing official current-day bucket is unknown, not zero: Today and the
+  current calendar day show pending, while an explicit zero stays zero and
+  known 7-day and 90-day totals remain available.
 
 ## Task overview
 
@@ -34,5 +37,24 @@ This document records the current product constraints.
   generated runtime state, or unrelated Workspace extension code.
 - Installation must work for a normal user home directory and must not require
   source edits.
+- Before copying files, installation validates absolute home/XDG paths,
+  `/usr/bin/python3` 3.11+, GNOME Shell 50, GJS, and user-systemd tooling.
+- Extension, icon, and user-unit paths respect `XDG_DATA_HOME` and
+  `XDG_CONFIG_HOME`.
+- A clean install whose current Shell has not discovered the extension queues
+  the new UUID for the next login without requiring a second installer run.
+- If the legacy UUID is still installed and the new UUID is not live-discovered,
+  preserve the legacy installation and require the safe staged migration rather
+  than queueing both UUIDs for the next login.
 - Deployment must preserve the user's quota/token data sources and avoid
   restarting GNOME Shell or opening foreground UI.
+- Settings migration tests must use an isolated GSettings backend and must
+  never write the user's dconf.
+- If installation fails after deployment begins, restore every installer-owned
+  target's previous contents and mode, preserve unknown extension files,
+  restore the exact enabled and disabled extension lists, and restore the
+  prior shared icon cache and systemd enabled/active state. A failed clean
+  installation leaves no owned files, icon cache, or service enablement
+  behind.
+- Uninstall must retire queued extension UUIDs even when the current Shell has
+  not discovered them.

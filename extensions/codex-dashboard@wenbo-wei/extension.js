@@ -13,10 +13,13 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 import {
     Availability,
+    calendarHeatClass,
+    calendarTokenValue,
     clamp,
     formatClockFromSeconds,
     formatRelativeTime,
     formatReset,
+    formatTodayTokens,
     formatTokens,
     limitTitle,
     normalizeAvailability,
@@ -349,21 +352,22 @@ class CodexDashboardButton extends PanelMenu.Button {
             style_class: 'codex-dashboard-overview-usage-content',
             x_expand: true,
             y_align: Clutter.ActorAlign.CENTER,
-            translation_y: 9,
         });
         usageContent.add_child(new St.Label({
             text: 'Token activity',
             style_class: 'codex-dashboard-usage-title',
             translation_y: 1,
         }));
+        const [todayRow, todayValue] = this._usageRow('Today');
+        this._usageToday = todayValue;
+        usageContent.add_child(todayRow);
+        const [weekRow, weekValue] = this._usageRow('Last 7 days');
+        this._usageWeek = weekValue;
+        usageContent.add_child(weekRow);
         const [ninetyDayRow, ninetyDayValue] =
             this._usageRow('Last 90 days');
         this._usageNinetyDays = ninetyDayValue;
         usageContent.add_child(ninetyDayRow);
-        const [weekRow, weekValue] = this._usageRow('Last 7 days');
-        weekRow.translation_y = -2;
-        this._usageWeek = weekValue;
-        usageContent.add_child(weekRow);
         usage.add_child(usageContent);
 
         card.add_child(quota);
@@ -833,11 +837,16 @@ class CodexDashboardButton extends PanelMenu.Button {
     _applyUsage(usage, availability = Availability.UNAVAILABLE) {
         const state = normalizeAvailability(availability);
         if (state === Availability.UNAVAILABLE) {
+            this._usageToday.text = '—';
             this._usageNinetyDays.text = '—';
             this._usageWeek.text = '—';
             this._applyCalendarUsage([]);
             return;
         }
+        this._usageToday.text = formatTodayTokens(
+            usage?.today,
+            usage?.current_day_available === true
+        );
         this._usageNinetyDays.text = formatTokens(usage?.ninety_days);
         this._usageWeek.text = formatTokens(usage?.seven_days);
         this._applyCalendarUsage(
@@ -867,13 +876,14 @@ class CodexDashboardButton extends PanelMenu.Button {
                     year,
                     month: monthNumber - 1,
                     day,
-                    tokens: Math.max(0, Number(item?.tokens) || 0),
+                    tokens: calendarTokenValue(item?.tokens),
                 }];
             });
         });
         const maximum = Math.max(
             0,
-            ...records.map(record => record.tokens)
+            ...records.flatMap(record =>
+                record.tokens === null ? [] : [record.tokens])
         );
 
         for (let index = 0; index < this._calendarMonths.length; index++) {
@@ -901,9 +911,10 @@ class CodexDashboardButton extends PanelMenu.Button {
                 new Date(Date.UTC(year, month, 1)).getUTCDay();
             const daysInMonth =
                 new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-            const byDay = new Map(monthData.days.map(item =>
-                [Number(item?.day), Math.max(0, Number(item?.tokens) || 0)]
-            ));
+            const byDay = new Map(monthData.days.map(item => [
+                Number(item?.day),
+                calendarTokenValue(item?.tokens),
+            ]));
             const lastVisibleDay = Math.min(
                 daysInMonth,
                 Math.max(0, ...byDay.keys())
@@ -927,23 +938,10 @@ class CodexDashboardButton extends PanelMenu.Button {
                     continue;
                 }
 
-                const value = byDay.get(day) ?? 0;
-                let level = 0;
-                if (value > 0 && maximum > 0) {
-                    level = Math.max(
-                        1,
-                        Math.min(
-                            4,
-                            Math.ceil(
-                                Math.log1p(value)
-                                / Math.log1p(maximum)
-                                * 4
-                            )
-                        )
-                    );
-                }
+                const value = byDay.has(day) ? byDay.get(day) : 0;
                 cell.text = String(day);
-                cell._heatLevelClass = `heat-level-${level}`;
+                cell._heatLevelClass =
+                    calendarHeatClass(value, maximum);
                 cell.add_style_class_name(cell._heatLevelClass);
                 cell.opacity = 255;
             }

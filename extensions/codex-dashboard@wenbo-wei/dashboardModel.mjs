@@ -72,6 +72,42 @@ export function formatTokens(value) {
 }
 
 
+export function formatTodayTokens(value, currentDayAvailable) {
+    if (currentDayAvailable !== true ||
+        value === null ||
+        value === undefined)
+        return 'Pending';
+    return formatTokens(value);
+}
+
+
+export function calendarTokenValue(value) {
+    if (value === null)
+        return null;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? Math.max(0, numeric) : 0;
+}
+
+
+export function calendarHeatClass(value, maximum) {
+    const tokens = calendarTokenValue(value);
+    if (tokens === null)
+        return 'calendar-pending';
+
+    const peak = Math.max(0, Number(maximum) || 0);
+    if (tokens <= 0 || peak <= 0)
+        return 'heat-level-0';
+    const level = Math.max(
+        1,
+        Math.min(
+            4,
+            Math.ceil(Math.log1p(tokens) / Math.log1p(peak) * 4)
+        )
+    );
+    return `heat-level-${level}`;
+}
+
+
 export function formatClockFromSeconds(seconds) {
     const value = Number(seconds);
     if (!Number.isFinite(value))

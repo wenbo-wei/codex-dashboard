@@ -1,23 +1,68 @@
 #!/bin/sh
 set -eu
 
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 extension_uuid='codex-dashboard@wenbo-wei'
 legacy_extension_uuid='codex-quota-centre@local'
-dashboard_lib_dir="$HOME/.local/lib/codex-dashboard"
-extension_dir="$HOME/.local/share/gnome-shell/extensions/$extension_uuid"
-legacy_extension_dir="$HOME/.local/share/gnome-shell/extensions/$legacy_extension_uuid"
 
-if command -v gnome-extensions >/dev/null 2>&1; then
-    gnome-extensions disable "$extension_uuid" >/dev/null 2>&1 || true
-    gnome-extensions disable "$legacy_extension_uuid" >/dev/null 2>&1 || true
-fi
+fail() {
+    echo "error: $*" >&2
+    exit 1
+}
+
+require_absolute_path() {
+    case "$2" in
+        /*)
+            ;;
+        *)
+            fail "$1 must be an absolute path"
+            ;;
+    esac
+}
+
+require_owned_directory() {
+    if [ -L "$2" ]; then
+        fail "$1 must not be a symbolic link: $2"
+    fi
+    if [ -e "$2" ] && [ ! -d "$2" ]; then
+        fail "$1 is not a directory: $2"
+    fi
+}
+
+home_dir=${HOME:-}
+require_absolute_path HOME "$home_dir"
+xdg_data_home=${XDG_DATA_HOME:-"$home_dir/.local/share"}
+require_absolute_path XDG_DATA_HOME "$xdg_data_home"
+xdg_config_home=${XDG_CONFIG_HOME:-"$home_dir/.config"}
+require_absolute_path XDG_CONFIG_HOME "$xdg_config_home"
+dashboard_lib_dir="$home_dir/.local/lib/codex-dashboard"
+extension_dir="$xdg_data_home/gnome-shell/extensions/$extension_uuid"
+legacy_extension_dir="$xdg_data_home/gnome-shell/extensions/$legacy_extension_uuid"
+icon_theme_dir="$xdg_data_home/icons/hicolor"
+settings_helper="$script_dir/queue-extension.mjs"
+
+require_owned_directory "dashboard library directory" "$dashboard_lib_dir"
+require_owned_directory "extension directory" "$extension_dir"
+require_owned_directory "legacy extension directory" "$legacy_extension_dir"
+[ -f "$settings_helper" ] ||
+    fail "release source is incomplete: $settings_helper"
+gjs_bin=$(command -v gjs) ||
+    fail "gjs is required to retire queued extension UUIDs"
+command -v systemctl >/dev/null 2>&1 ||
+    fail "systemctl is required to remove the user service"
+
+"$gjs_bin" -m \
+    "$settings_helper" \
+    --disable \
+    "$extension_uuid" \
+    "$legacy_extension_uuid"
 systemctl --user disable --now codex-quota.service >/dev/null 2>&1 || true
 
 rm -f \
-    "$HOME/.local/bin/codex-dashboard-data" \
-    "$HOME/.local/bin/codex-quota" \
-    "$HOME/.config/systemd/user/codex-quota.service" \
-    "$HOME/.local/share/icons/hicolor/scalable/apps/codex-dashboard-symbolic.svg"
+    "$home_dir/.local/bin/codex-dashboard-data" \
+    "$home_dir/.local/bin/codex-quota" \
+    "$xdg_config_home/systemd/user/codex-quota.service" \
+    "$icon_theme_dir/scalable/apps/codex-dashboard-symbolic.svg"
 rm -f \
     "$dashboard_lib_dir/codex_app_server.py" \
     "$dashboard_lib_dir/quota_snapshot.py" \
@@ -40,10 +85,20 @@ rmdir \
     "$extension_dir" \
     "$legacy_extension_dir" \
     2>/dev/null || true
+for preserved_directory in \
+    "$dashboard_lib_dir" \
+    "$extension_dir" \
+    "$legacy_extension_dir"
+do
+    if [ -d "$preserved_directory" ]; then
+        echo "warning: preserved unrecognized files in "\
+"$preserved_directory" >&2
+    fi
+done
 systemctl --user daemon-reload
 
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-    gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" >/dev/null
+    gtk-update-icon-cache -f -t "$icon_theme_dir" >/dev/null
 fi
 
 echo "Codex Dashboard removed. Codex sessions and account data were not touched."

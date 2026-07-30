@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.2.0 - 2026-07-30
+
+- Show a pending Today value and calendar state when the official current-day
+  bucket has not arrived, while preserving explicit zeroes and known totals.
+- Queue clean first installs for the next login without a second installer run,
+  while retaining the safe staged flow whenever a legacy UUID is installed.
+- Respect XDG data/config locations and roll back owned files, the shared icon
+  cache, extension settings, and prior systemd state after a late failure.
+- Validate absolute home/XDG paths and declared Python, GNOME Shell, GJS, and
+  systemd prerequisites before copying installation files.
+- Retire queued UUIDs during uninstall even before the current Shell discovers
+  them.
+- Restore focused backend, presentation, and isolated GSettings regression
+  tests to `make check`, including clean, staged, and rollback installer paths.
+
 ## 1.1.0 - 2026-07-30
 
 - Replace the legacy local extension UUID with `codex-dashboard@wenbo-wei` and

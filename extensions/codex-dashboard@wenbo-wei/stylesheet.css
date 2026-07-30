@@ -264,7 +264,7 @@
 }
 
 .codex-dashboard-usage-row {
-  height: 56px;
+  height: 38px;
   spacing: 9px;
   border-top: 1px solid #e4e1e9;
 }
@@ -275,7 +275,7 @@
 }
 
 .codex-dashboard-usage-value {
-  font-size: 28px;
+  font-size: 23px;
   font-weight: 720;
   color: #3a3744;
 }
@@ -385,6 +385,12 @@
 
 .codex-dashboard-calendar-day.heat-level-0 {
   background-color: #e3e1e9;
+}
+
+.codex-dashboard-calendar-day.calendar-pending {
+  border: 1px solid #d1a23d;
+  background-color: #fff0bd;
+  color: #795600;
 }
 
 .codex-dashboard-heat-cell.heat-level-1 {

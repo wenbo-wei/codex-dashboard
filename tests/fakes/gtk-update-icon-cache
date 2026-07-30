@@ -1,0 +1,15 @@
+#!/bin/sh
+
+icon_theme_dir=
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-t" ]; then
+        shift
+        icon_theme_dir=${1:-}
+    fi
+    shift
+done
+
+[ -n "$icon_theme_dir" ] || exit 64
+install -d "$icon_theme_dir"
+rm -f -- "$icon_theme_dir/icon-theme.cache"
+printf '%s\n' fake-icon-cache >"$icon_theme_dir/icon-theme.cache"

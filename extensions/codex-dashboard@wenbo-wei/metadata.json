@@ -3,5 +3,5 @@
   "name": "Codex Dashboard",
   "description": "Shows Codex quota, official token activity, and one-sentence terminal task overviews in the GNOME top panel.",
   "shell-version": ["50"],
-  "version": 1
+  "version": 2
 }
