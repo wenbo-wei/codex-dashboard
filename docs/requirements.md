@@ -48,8 +48,6 @@ This document records the current product constraints.
   than queueing both UUIDs for the next login.
 - Deployment must preserve the user's quota/token data sources and avoid
   restarting GNOME Shell or opening foreground UI.
-- Settings migration tests must use an isolated GSettings backend and must
-  never write the user's dconf.
 - If installation fails after deployment begins, restore every installer-owned
   target's previous contents and mode, preserve unknown extension files,
   restore the exact enabled and disabled extension lists, and restore the

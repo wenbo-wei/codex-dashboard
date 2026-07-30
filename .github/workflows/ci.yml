@@ -18,9 +18,5 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
-      - name: Install GJS test dependency
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes gjs python3-dbus python3-gi
       - name: Check syntax
         run: make PYTHON=python check

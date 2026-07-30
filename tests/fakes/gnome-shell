@@ -1,3 +1,0 @@
-#!/bin/sh
-
-printf 'GNOME Shell %s\n' "${FAKE_GNOME_SHELL_VERSION:-50.0}"

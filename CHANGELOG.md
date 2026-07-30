@@ -12,8 +12,8 @@
   systemd prerequisites before copying installation files.
 - Retire queued UUIDs during uninstall even before the current Shell discovers
   them.
-- Restore focused backend, presentation, and isolated GSettings regression
-  tests to `make check`, including clean, staged, and rollback installer paths.
+- Keep lightweight Python, JSON, JavaScript, and shell syntax checks in
+  `make check`.
 
 ## 1.1.0 - 2026-07-30
 

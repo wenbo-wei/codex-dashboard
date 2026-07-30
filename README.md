@@ -77,8 +77,7 @@ Uninstalling does not delete Codex sessions, account data, configuration, or
 the Codex CLI. It also retires a queued UUID that the current Shell has not
 discovered yet.
 
-Run `make check` for source checks and focused regression tests. The settings
-test uses an isolated GSettings backend and never writes the user's dconf.
+Run `make check` for Python, JSON, JavaScript, and shell syntax checks.
 
 ## License
 
