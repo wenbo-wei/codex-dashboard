@@ -52,6 +52,7 @@ SNAPSHOT_LOAD_RESULT = quota_snapshot_module.SnapshotLoadResult
 FORMAT_PANEL_LABEL = quota_sni_module.format_panel_label
 BUILD_MENU_ITEMS = quota_sni_module.build_menu_items
 FORMAT_REFRESH_LABEL = quota_sni_module.format_refresh_label
+FORMAT_RESET_TIME = quota_sni_module.format_reset_time
 HEADLESS_MENU = quota_sni_module.HeadlessMenu
 HEADLESS_STATUS_ITEM = quota_sni_module.HeadlessStatusItem
 CODEX_QUOTA_APPLICATION = QUOTA["CodexQuotaApplication"]
@@ -121,6 +122,21 @@ def quota_snapshot(remaining_percent, updated_at="2026-07-24T03:20:00Z"):
             }
         ],
     }
+
+
+@contextlib.contextmanager
+def temporary_timezone(name):
+    original = os.environ.get("TZ")
+    os.environ["TZ"] = name
+    time.tzset()
+    try:
+        yield
+    finally:
+        if original is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = original
+        time.tzset()
 
 
 def write_fake_codex(directory, body):
@@ -228,6 +244,20 @@ class CodexBinaryResolutionTest(unittest.TestCase):
         self.assertEqual(snapshot, direct)
 
 
+class ResetTimeFormattingTest(unittest.TestCase):
+    def test_reset_time_uses_the_desktop_timezone(self):
+        with temporary_timezone("UTC"):
+            self.assertEqual(
+                FORMAT_RESET_TIME(1785258149),
+                "Jul 28, 17:02",
+            )
+        with temporary_timezone("Asia/Shanghai"):
+            self.assertEqual(
+                FORMAT_RESET_TIME(1785258149),
+                "Jul 29, 01:02",
+            )
+
+
 class SnapshotFromRecordTest(unittest.TestCase):
     def test_accepts_legacy_codex_limit(self):
         self.assertIsNotNone(SNAPSHOT_FROM_RECORD(quota_record("codex")))
@@ -300,7 +330,8 @@ class SnapshotFromRecordTest(unittest.TestCase):
             ]
         }
 
-        items = BUILD_MENU_ITEMS(snapshot)
+        with temporary_timezone("Asia/Shanghai"):
+            items = BUILD_MENU_ITEMS(snapshot)
         self.assertEqual(
             items,
             [
@@ -318,7 +349,8 @@ class SnapshotFromRecordTest(unittest.TestCase):
         snapshot["_source"] = "session"
         snapshot["_stale"] = True
 
-        items = BUILD_MENU_ITEMS(snapshot)
+        with temporary_timezone("Asia/Shanghai"):
+            items = BUILD_MENU_ITEMS(snapshot)
 
         self.assertEqual(
             items,
