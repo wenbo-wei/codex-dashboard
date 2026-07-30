@@ -28,16 +28,32 @@ This document records the current product constraints.
 
 - Treat each recent root Codex session as one terminal task.
 - Show at most five recent, unarchived root sessions, newest first.
-- Represent every task with one concise sentence derived from that session's
-  own user-provided title.
-- Prefer a user-assigned session name when Codex provides one.
-- Keep the task's original language and concrete wording.
-- Do not map task text to a fixed catalogue of domains, actions, or canned
-  replacement sentences.
-- Ignore subagents, injected instruction envelopes, image placeholders, and
-  bare skill-command prefixes.
-- Read the local Codex thread index without modifying it. Task summaries must
-  not trigger a model request, consume tokens, or send session text elsewhere.
+- Represent every task with one complete printable-ASCII English
+  action-and-subject phrase no wider than 48 display columns.
+- Prefer a concise English user-assigned session name when Codex provides one
+  and it passes the same content, width, and completeness validation as a
+  generated overview. Otherwise, use that name as primary classification
+  evidence without displaying unverified source text.
+- Anchor the action in the explicit name or initial request so routine
+  follow-ups do not rename the task.
+- Use substantive user turns available within the bounded transcript scan to
+  confirm or fill a missing subject. Prefer a conservatively validated,
+  specific ASCII technical identifier when it is more informative than a broad
+  domain, and otherwise use the deterministic English subject rules.
+- Prefer the assistant's opening task restatement as supporting semantic
+  evidence; use the latest completed answer only when no trustworthy opening
+  restatement exists.
+- Use a stable English generic phrase only when no more specific subject can be
+  derived. Never expose a non-English fallback or a truncated source fragment.
+- Ignore subagents, generic acknowledgements, injected instruction envelopes,
+  image placeholders, bare skill-command prefixes, and unrelated workflow
+  status.
+- Validate that every transcript belongs to the indexed root thread, and read
+  the local thread index and transcript without modifying either one.
+- Task overviews must not trigger another model request, consume tokens, cache
+  source text, or send session text elsewhere.
+- Render the bounded phrase as a complete single line. Neither the generated
+  value nor the UI may add a trailing ellipsis to valid task data.
 
 ## Open-source delivery
 

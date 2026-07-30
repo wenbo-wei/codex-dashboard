@@ -4,10 +4,14 @@ A small, local-first GNOME Shell 50 extension that shows:
 
 - the current Codex quota;
 - an approximate live Today value plus official 7-day and 90-day token activity;
-- five recent terminal tasks, one concise sentence per root Codex session.
+- five recent terminal tasks, one fixed-length overview per root Codex session.
 
-Task titles keep the user's language and wording. There is no fixed task
-catalogue, translation, or model-generated summary.
+Every Task Overview is a complete printable-ASCII English action-and-subject
+phrase no wider than 48 display columns. The local helper derives it
+deterministically from the explicit session name, initial request, substantive
+follow-ups within a bounded transcript scan, opening task restatement, and
+latest completion already present in the conversation. It never makes an extra
+model request.
 
 > This is an unofficial community project and is not affiliated with OpenAI.
 
@@ -37,11 +41,12 @@ GNOME extension lists, shared icon cache, and user-service state.
 ## How it works
 
 - `extension.js` renders the GNOME top-panel button and menu.
-- `codex-dashboard-data` reads the local Codex thread index in SQLite
-  read-only mode, turns each recent root session into one task sentence, and
-  reads numeric token counters for the live Today estimate. A small aggregate
-  snapshot in the user runtime directory keeps that estimate monotonic without
-  storing session text.
+- `codex-dashboard-data` reads the local Codex thread index and the relevant
+  assistant and user events in each root transcript in read-only mode,
+  classifies each recent conversation into one bounded English task overview,
+  and reads numeric token counters for the live Today estimate. A small
+  aggregate snapshot in the user runtime directory keeps that estimate
+  monotonic without storing session text.
 - `codex-quota` publishes live quota state for the extension.
 - Official historical token and quota data come from the locally installed
   Codex CLI app-server.
@@ -56,16 +61,19 @@ official; Today falls back to **Pending** if no safe local estimate is
 available.
 
 Subagents, archived sessions, injected instructions, skill prefixes, and image
-placeholders are excluded from task rows. The estimator reads numeric counters,
-not message text. No session text is uploaded by this project and no model
-request is made to generate task titles.
+placeholders are excluded from task rows. A transcript must identify itself as
+the indexed root thread before it can supply overview evidence. The English
+classifier runs locally with a fixed action-and-subject vocabulary; it does not
+store source text. The estimator reads numeric counters, not message text. No
+session text is cached or uploaded by this project, and opening the dashboard
+never starts another model request.
 
 ## Repository layout
 
-- `extensions/codex-dashboard@wenbo-wei/` — GNOME Shell interface
-- `codex-quota/` — dashboard data and quota publisher
-- `backend/` — Codex app-server and quota backend modules
-- `scripts/` and `systemd/` — installation and background service
+- `extensions/codex-dashboard@wenbo-wei/` - GNOME Shell interface
+- `codex-quota/` - dashboard data and quota publisher
+- `backend/` - Codex app-server and quota backend modules
+- `scripts/` and `systemd/` - installation and background service
 
 ## Update or remove
 

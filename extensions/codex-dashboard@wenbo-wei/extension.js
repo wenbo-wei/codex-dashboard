@@ -4,7 +4,6 @@ import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
-import Pango from 'gi://Pango';
 import St from 'gi://St';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -44,11 +43,15 @@ const CODEX_BUTTON_STYLE = 'codex-dashboard-centre-button';
 const DATA_HELPER_TIMEOUT_MILLISECONDS = 12_000;
 
 
-function ellipsizedLabel(properties = {}) {
-    const label = new St.Label(properties);
-    label.clutter_text.ellipsize = Pango.EllipsizeMode.END;
-    label.clutter_text.single_line_mode = true;
-    return label;
+function taskOverviewTitle(value) {
+    const title = String(value ?? '');
+    if (
+        /^[\x20-\x7e]{1,48}$/.test(title)
+        && /[A-Za-z]/.test(title)
+        && !title.includes('...')
+    )
+        return title;
+    return 'Task overview unavailable';
 }
 
 
@@ -388,7 +391,7 @@ class CodexDashboardButton extends PanelMenu.Button {
             y_align: Clutter.ActorAlign.CENTER,
         }));
         const value = new St.Label({
-            text: '—',
+            text: '\u2014',
             style_class: 'codex-dashboard-usage-value',
             y_align: Clutter.ActorAlign.CENTER,
         });
@@ -412,15 +415,16 @@ class CodexDashboardButton extends PanelMenu.Button {
                 x_expand: true,
             });
             const dot = new St.Label({
-                text: '●',
+                text: '\u25cf',
                 style_class: 'codex-dashboard-task-dot task-neutral',
             });
             row.add_child(dot);
-            const title = ellipsizedLabel({
-                text: index === 0 ? 'Loading terminal tasks…' : '',
+            const title = new St.Label({
+                text: index === 0 ? 'Loading terminal tasks' : '',
                 style_class: 'codex-dashboard-task-title',
                 x_expand: true,
             });
+            title.clutter_text.single_line_mode = true;
             row.add_child(title);
             const meta = new St.Label({
                 text: '',
@@ -826,7 +830,7 @@ class CodexDashboardButton extends PanelMenu.Button {
         this._quotaPlan.text = planTitle(quota.plan_type);
         const resetText = formatReset(active.resets_at);
         this._quotaReset.text = state === Availability.STALE
-            ? `Cached · ${resetText}`
+            ? `Cached \u00b7 ${resetText}`
             : resetText;
         const resetDate = formatClockFromSeconds(active.resets_at);
         this._quotaResetDate.text = resetDate.includes('unavailable')
@@ -838,9 +842,9 @@ class CodexDashboardButton extends PanelMenu.Button {
     _applyUsage(usage, availability = Availability.UNAVAILABLE) {
         const state = normalizeAvailability(availability);
         if (state === Availability.UNAVAILABLE) {
-            this._usageToday.text = '—';
-            this._usageNinetyDays.text = '—';
-            this._usageWeek.text = '—';
+            this._usageToday.text = '\u2014';
+            this._usageNinetyDays.text = '\u2014';
+            this._usageWeek.text = '\u2014';
             this._applyCalendarUsage([]);
             return;
         }
@@ -900,7 +904,7 @@ class CodexDashboardButton extends PanelMenu.Button {
                 || !Number.isInteger(monthNumber)
                 || !Array.isArray(monthData?.days)
             ) {
-                actors.name.text = '—';
+                actors.name.text = '\u2014';
                 for (const cell of actors.cells) {
                     cell.remove_style_class_name(cell._heatLevelClass);
                     cell._heatLevelClass = 'heat-level-0';
@@ -1000,7 +1004,7 @@ class CodexDashboardButton extends PanelMenu.Button {
                 continue;
             }
             actors.row.show();
-            actors.title.text = String(task.title ?? 'Untitled task');
+            actors.title.text = taskOverviewTitle(task.title);
             const status = String(task.status ?? 'unknown');
             const labels = {
                 in_progress: 'Active',
@@ -1029,7 +1033,7 @@ class CodexDashboardButton extends PanelMenu.Button {
             const relative = formatRelativeTime(task.updated_at);
             const statusLabel = labels[status] ?? 'Recorded';
             actors.meta.text = statusLabel && relative
-                ? `${statusLabel} · ${relative}`
+                ? `${statusLabel} \u00b7 ${relative}`
                 : statusLabel || relative;
         }
         if (!entries.length) {

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.0 - 2026-07-30
+
+- Replace raw first-request task titles with fixed-length English-only
+  action-and-subject overviews derived locally from the conversation.
+- Keep every overview within 48 display columns and remove the UI's second
+  ellipsis so the complete phrase remains visible.
+- Validate transcript identity and preserve local-only, zero-extra-token
+  behaviour with a safe English fallback.
+
 ## 1.3.0 - 2026-07-30
 
 - Replace the perpetually pending Today label with a clearly marked local

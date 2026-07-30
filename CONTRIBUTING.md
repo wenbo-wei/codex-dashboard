@@ -2,17 +2,25 @@
 
 ## Code standards
 
-- Support Python 3.11 or newer. Keep the data helper's task-summary path
-  standard-library-only and deterministic.
+- Support Python 3.11 or newer. Keep the data helper's task-overview path
+  standard-library-only, deterministic, local-only, and read-only.
 - Keep local paths relative to `Path.home()` or explicit environment
   overrides. Never commit a developer-specific absolute home path.
 - Treat the Codex state database and session data as private, read-only input.
   Never log task source text or send it over the network.
 - Use only synthetic task text in examples, screenshots, and bug reports.
   Never commit a real Codex database or JSONL session.
-- Task summaries are extractive: retain the user's concrete wording and
-  language. Do not add a domain-specific classification catalogue or canned
-  task descriptions.
+- Render every Task Overview as a complete English-only phrase within 48
+  display columns using printable ASCII. Keep the deterministic
+  action-and-subject rules concise, preserve conservatively validated technical
+  identifiers when useful, and never truncate source text into a misleading
+  fragment.
+- Keep source files, comments, docstrings, documentation, and explanatory text
+  in English. Use Unicode escapes when local matching rules must recognize
+  non-English input.
+- Task overview generation must stay standard-library-only and must never
+  trigger a model request, cache source text, or send conversation text
+  elsewhere.
 - Keep GNOME Shell code compatible with the versions declared in
   `metadata.json`. Follow the existing four-space indentation and semicolon
   style in JavaScript.
