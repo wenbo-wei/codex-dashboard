@@ -104,7 +104,7 @@ def _request_wire(method: str, params: Any) -> bytes:
             "method": "initialize",
             "params": {
                 "clientInfo": {
-                    "name": "codex-panel",
+                    "name": "codex-dashboard",
                     "version": "1.0",
                 }
             },

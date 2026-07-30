@@ -5,9 +5,9 @@ NODE ?= node
 
 check:
 	$(PYTHON) -m py_compile \
-		codex-panel/codex_app_server.py \
-		codex-panel/quota_snapshot.py \
-		codex-panel/quota_sni.py \
+		backend/codex_app_server.py \
+		backend/quota_snapshot.py \
+		backend/quota_sni.py \
 		codex-quota/codex-dashboard-data \
 		codex-quota/codex-quota
 	$(PYTHON) -m json.tool \

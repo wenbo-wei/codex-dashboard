@@ -93,9 +93,9 @@ install -m 0755 \
     "$project_root/codex-quota/codex-quota" \
     "$local_bin_dir/codex-quota"
 install -m 0644 \
-    "$project_root/codex-panel/codex_app_server.py" \
-    "$project_root/codex-panel/quota_snapshot.py" \
-    "$project_root/codex-panel/quota_sni.py" \
+    "$project_root/backend/codex_app_server.py" \
+    "$project_root/backend/quota_snapshot.py" \
+    "$project_root/backend/quota_sni.py" \
     "$dashboard_lib_dir/"
 install -m 0644 \
     "$project_root/extensions/$extension_uuid/extension.js" \

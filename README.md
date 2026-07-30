@@ -45,7 +45,7 @@ project and no model request is made to generate task titles.
 
 - `extensions/codex-dashboard@wenbo-wei/` — GNOME Shell interface
 - `codex-quota/` — dashboard data and quota publisher
-- `codex-panel/` — shared Python modules
+- `backend/` — Codex app-server and quota backend modules
 - `scripts/` and `systemd/` — installation and background service
 
 ## Update or remove
