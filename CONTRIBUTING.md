@@ -16,8 +16,9 @@
 - Keep GNOME Shell code compatible with the versions declared in
   `metadata.json`. Follow the existing four-space indentation and semicolon
   style in JavaScript.
-- Preserve truthful availability states. Missing official data is unavailable
-  or pending; it is not a numeric zero.
+- Preserve truthful availability states. Never present estimated data as
+  official: approximate Today values use a separate field and a visible `~`;
+  missing values remain pending rather than becoming a numeric zero.
 - Describe the manual or runtime checks used to verify behaviour changes.
 
 ## Before submitting

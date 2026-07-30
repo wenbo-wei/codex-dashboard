@@ -1,9 +1,11 @@
 #!/usr/bin/python3
 """Build truthful local data for the Codex GNOME dashboard.
 
-Quota values come from codex-quota's live account snapshot. Token totals come
-from Codex's official account usage endpoint. Recent task overviews come only
-from the current Codex thread index.
+Quota values come from codex-quota's live account snapshot. Historical token
+totals come from Codex's official account usage endpoint; while its current-day
+bucket is pending, Today is estimated from local token counters and clearly
+marked as approximate. Recent task overviews come only from the current Codex
+thread index.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from pathlib import Path
 import re
 import sqlite3
 import sys
+import tempfile
 import time
 from typing import Any
 import unicodedata
@@ -42,6 +45,10 @@ RECENT_TASK_LIMIT = 5
 TASK_OVERVIEW_COLUMNS = 96
 OFFICIAL_USAGE_TIMEOUT_SECONDS = 8.0
 MAX_PROTOCOL_LINE_BYTES = 4 * 1024 * 1024
+LOCAL_ESTIMATE_LOOKBACK_DAYS = 7
+LOCAL_ACTIVITY_STATE_VERSION = 2
+MIN_CALIBRATION_FACTOR = 0.05
+MAX_CALIBRATION_FACTOR = 20.0
 QUOTA_STALE_AFTER_SECONDS = 300.0
 IMAGE_PLACEHOLDER = re.compile(r"\[Image(?:\s+#?\d+)?\]", re.IGNORECASE)
 TASK_COMMAND_PREFIX = re.compile(
@@ -153,6 +160,10 @@ def _runtime_dir() -> Path:
     )
 
 
+def _local_activity_state_path() -> Path:
+    return _runtime_dir() / "codex-dashboard-today.json"
+
+
 def _quota_state() -> dict[str, Any]:
     path = _runtime_dir() / "codex-quota.json"
     try:
@@ -178,6 +189,354 @@ def _latest_state_db(codex_home: Path) -> Path | None:
 
 def _connect_read_only(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=0.5)
+
+
+def _thread_index_path(codex_home: Path) -> Path:
+    state_db = _latest_state_db(codex_home)
+    if state_db is None or not state_db.is_file():
+        raise FileNotFoundError("Codex thread index is unavailable")
+    return state_db
+
+
+def _thread_columns(connection: sqlite3.Connection) -> set[str]:
+    return {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(threads)")
+        if len(row) > 1
+    }
+
+
+def _nonnegative_token_count(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        numeric = float(value)
+    except OverflowError:
+        return None
+    if not math.isfinite(numeric) or value < 0:
+        return None
+    return int(value)
+
+
+def _load_local_activity_state(
+    path: Path,
+    codex_home: Path,
+) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != LOCAL_ACTIVITY_STATE_VERSION
+        or payload.get("codex_home") != str(codex_home.resolve())
+    ):
+        return {}
+    return payload
+
+
+def _write_local_activity_state(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=".codex-dashboard-today-",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            os.fchmod(temporary.fileno(), 0o600)
+            json.dump(
+                payload,
+                temporary,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def _current_day_activity_state(
+    path: Path,
+    codex_home: Path,
+    now: dt.datetime,
+) -> dict[str, Any]:
+    state = _load_local_activity_state(path, codex_home)
+    if state.get("date") != now.date().isoformat():
+        return {}
+    return state
+
+
+def _monotonic_today_estimate(
+    value: int,
+    path: Path,
+    codex_home: Path,
+    now: dt.datetime,
+) -> int:
+    state = _current_day_activity_state(path, codex_home, now)
+    if not state:
+        raise ValueError("Today estimate state is unavailable")
+    previous = _nonnegative_token_count(state.get("last_estimate"))
+    monotonic_value = max(value, previous or 0)
+    if previous is not None and monotonic_value == previous:
+        return previous
+    state["last_estimate"] = monotonic_value
+    try:
+        _write_local_activity_state(path, state)
+    except OSError:
+        if previous is not None:
+            return previous
+        raise
+    return monotonic_value
+
+
+def _persisted_today_floor(
+    path: Path,
+    codex_home: Path,
+    now: dt.datetime,
+) -> int | None:
+    state = _current_day_activity_state(path, codex_home, now)
+    return _nonnegative_token_count(state.get("last_estimate"))
+
+
+def _recent_day_totals(
+    value: Any,
+    cutoff: dt.date,
+    before: dt.date,
+) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    totals: dict[str, int] = {}
+    for day_value, tokens_value in value.items():
+        if not isinstance(day_value, str):
+            continue
+        try:
+            day = dt.date.fromisoformat(day_value)
+        except ValueError:
+            continue
+        tokens = _nonnegative_token_count(tokens_value)
+        if cutoff <= day < before and tokens is not None:
+            totals[day_value] = tokens
+    return totals
+
+
+class LocalThreadTokenActivity:
+    """Maintain monotonic local-day totals from numeric thread counters."""
+
+    def __init__(
+        self,
+        codex_home: Path,
+        state_path: Path,
+        now: dt.datetime | None = None,
+    ) -> None:
+        self._codex_home = codex_home
+        self._state_path = state_path
+        self._now = now
+
+    def build(self) -> dict[str, int]:
+        now = self._now or dt.datetime.now().astimezone()
+        if now.tzinfo is None:
+            now = now.astimezone()
+        timezone = now.tzinfo
+        if timezone is None:
+            raise ValueError("Local timezone is unavailable")
+
+        state_db = _thread_index_path(self._codex_home)
+        with _connect_read_only(state_db) as connection:
+            columns = _thread_columns(connection)
+            if "tokens_used" not in columns:
+                raise sqlite3.DatabaseError(
+                    "Codex thread token counters are unavailable"
+                )
+            time_column = next(
+                (
+                    column
+                    for column in ("created_at", "created_at_ms")
+                    if column in columns
+                ),
+                None,
+            )
+            if time_column is None:
+                raise sqlite3.DatabaseError(
+                    "Codex thread start times are unavailable"
+                )
+
+            rows = connection.execute(
+                f"""
+                SELECT {time_column}, tokens_used
+                FROM threads
+                """
+            ).fetchall()
+
+        today = now.date()
+        cutoff = today - dt.timedelta(days=LOCAL_ESTIMATE_LOOKBACK_DAYS)
+        grouped_totals: defaultdict[str, int] = defaultdict(int)
+        account_total = 0
+        valid_counter_rows = 0
+        account_snapshot_complete = bool(rows)
+        day_grouping_complete = bool(rows)
+        for created_at, tokens_used in rows:
+            tokens = _nonnegative_token_count(tokens_used)
+            if tokens is None:
+                account_snapshot_complete = False
+                day_grouping_complete = False
+                continue
+            valid_counter_rows += 1
+            account_total += tokens
+            if (
+                isinstance(created_at, bool)
+                or not isinstance(created_at, (int, float))
+                or not math.isfinite(float(created_at))
+            ):
+                day_grouping_complete = False
+                continue
+            timestamp = float(created_at)
+            if time_column.endswith("_ms"):
+                timestamp /= 1_000
+            try:
+                day = dt.datetime.fromtimestamp(
+                    timestamp,
+                    tz=timezone,
+                ).date()
+            except (OverflowError, OSError, ValueError):
+                day_grouping_complete = False
+                continue
+            if cutoff <= day <= today:
+                grouped_totals[day.isoformat()] += tokens
+        if valid_counter_rows == 0:
+            account_snapshot_complete = False
+            day_grouping_complete = False
+
+        offset = now.utcoffset()
+        offset_seconds = int(offset.total_seconds()) if offset is not None else 0
+        state = _load_local_activity_state(
+            self._state_path,
+            self._codex_home,
+        )
+        previous_total = _nonnegative_token_count(
+            state.get("total_snapshot")
+        )
+        previous_today = _nonnegative_token_count(
+            state.get("today_tokens")
+        )
+        try:
+            previous_date = dt.date.fromisoformat(state.get("date", ""))
+        except (TypeError, ValueError):
+            previous_date = None
+
+        baseline_is_trusted = (
+            previous_date in {today, today - dt.timedelta(days=1)}
+            and state.get("total_snapshot_complete") is True
+            and previous_total is not None
+        )
+        today_snapshot_is_trusted = (
+            baseline_is_trusted and previous_today is not None
+        )
+        if not account_snapshot_complete and not baseline_is_trusted:
+            raise ValueError("No complete local token snapshot is available")
+
+        completed_days = _recent_day_totals(
+            state.get("completed_days") if baseline_is_trusted else None,
+            cutoff,
+            today,
+        )
+        if baseline_is_trusted and previous_date == today:
+            if not account_snapshot_complete:
+                if previous_today is None:
+                    raise ValueError("Today local token activity is unavailable")
+                totals = dict(completed_days)
+                totals[today.isoformat()] = previous_today
+                return totals
+
+            if previous_today is not None:
+                growth_estimate = previous_today + max(
+                    0,
+                    account_total - previous_total,
+                )
+                today_tokens = max(
+                    growth_estimate,
+                    grouped_totals.get(today.isoformat(), 0)
+                    if day_grouping_complete
+                    else 0,
+                )
+                total_snapshot = account_total
+            elif day_grouping_complete:
+                completed_days = {
+                    day: tokens
+                    for day, tokens in grouped_totals.items()
+                    if day != today.isoformat()
+                }
+                today_tokens = max(
+                    grouped_totals.get(today.isoformat(), 0),
+                    max(0, account_total - previous_total),
+                )
+                total_snapshot = account_total
+            else:
+                growth = max(0, account_total - previous_total)
+                today_tokens = growth if growth > 0 else None
+                total_snapshot = account_total
+        elif (
+            today_snapshot_is_trusted
+            and previous_date == today - dt.timedelta(days=1)
+        ):
+            if not account_snapshot_complete:
+                raise ValueError("Today local token activity is unavailable")
+            completed_days[previous_date.isoformat()] = previous_today
+            today_tokens = max(
+                grouped_totals.get(today.isoformat(), 0)
+                if day_grouping_complete
+                else 0,
+                max(0, account_total - previous_total),
+            )
+            total_snapshot = account_total
+        else:
+            if day_grouping_complete:
+                completed_days = {
+                    day: tokens
+                    for day, tokens in grouped_totals.items()
+                    if day != today.isoformat()
+                }
+                today_tokens = grouped_totals.get(today.isoformat(), 0)
+            else:
+                completed_days = {}
+                today_tokens = None
+            total_snapshot = account_total
+
+        payload = {
+            "version": LOCAL_ACTIVITY_STATE_VERSION,
+            "codex_home": str(self._codex_home.resolve()),
+            "timezone_offset_seconds": offset_seconds,
+            "date": today.isoformat(),
+            "generated_at": now.isoformat(),
+            "total_snapshot": total_snapshot,
+            "total_snapshot_complete": True,
+            "today_tokens": today_tokens,
+            "completed_days": completed_days,
+        }
+        if previous_date == today and today_tokens is not None:
+            last_estimate = _nonnegative_token_count(
+                state.get("last_estimate")
+            )
+            if last_estimate is not None:
+                payload["last_estimate"] = last_estimate
+        _write_local_activity_state(self._state_path, payload)
+        if today_tokens is None:
+            raise ValueError("Today local token activity is unavailable")
+
+        totals = dict(completed_days)
+        totals[today.isoformat()] = today_tokens
+        return totals
 
 
 def _shift_month(value: dt.date, offset: int) -> dt.date:
@@ -226,8 +585,68 @@ def _calendar_months(
     return months
 
 
+def _today_estimate_payload(
+    value: int | None = None,
+    source: str | None = None,
+    calibration_date: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "today_estimate": value,
+        "today_is_estimate": value is not None,
+        "today_estimate_source": source,
+        "today_estimate_calibration_date": calibration_date,
+    }
+
+
 def _token_usage() -> dict[str, Any]:
-    return OfficialTokenActivity().build(_read_official_usage())
+    now = dt.datetime.now().astimezone()
+    payload = _read_official_usage()
+    usage = OfficialTokenActivity(now).build(payload)
+    usage.update(_today_estimate_payload())
+    local_activity = LocalThreadTokenActivity(
+        _codex_home(),
+        _local_activity_state_path(),
+        now,
+    )
+    try:
+        local_totals = local_activity.build()
+    except (OSError, sqlite3.Error, ValueError, OverflowError):
+        # Estimation is optional; never hide known official history if local
+        # counters or their read-only index are temporarily unavailable.
+        if not usage["current_day_available"]:
+            floor = _persisted_today_floor(
+                _local_activity_state_path(),
+                _codex_home(),
+                now,
+            )
+            if floor is not None:
+                usage.update(_today_estimate_payload(
+                    floor,
+                    "local_thread_tokens_persisted_floor",
+                ))
+        return usage
+    if usage["current_day_available"]:
+        return usage
+
+    estimate = _calibrated_today_estimate(
+        local_totals,
+        usage["days"],
+        now.date(),
+    )
+    if estimate is None:
+        return usage
+    value, source, calibration_date = estimate
+    try:
+        value = _monotonic_today_estimate(
+            value,
+            _local_activity_state_path(),
+            _codex_home(),
+            now,
+        )
+    except (OSError, ValueError):
+        return usage
+    usage.update(_today_estimate_payload(value, source, calibration_date))
+    return usage
 
 
 def _read_official_usage(
@@ -330,6 +749,61 @@ class OfficialTokenActivity:
             "source": "official_account_usage",
             "includes_cached_input": False,
         }
+
+
+def _valid_calibration_factor(value: float) -> bool:
+    return (
+        math.isfinite(value)
+        and MIN_CALIBRATION_FACTOR <= value <= MAX_CALIBRATION_FACTOR
+    )
+
+
+def _calibrated_today_estimate(
+    local_totals: dict[str, int],
+    official_days: list[dict[str, Any]],
+    today: dt.date,
+) -> tuple[int, str, str | None] | None:
+    if not isinstance(local_totals, dict):
+        return None
+    today_key = today.isoformat()
+    local_today = _nonnegative_token_count(local_totals.get(today_key))
+    if local_today is None:
+        return None
+    if local_today == 0:
+        return 0, "local_thread_tokens", None
+
+    cutoff = today - dt.timedelta(days=LOCAL_ESTIMATE_LOOKBACK_DAYS)
+    samples: list[tuple[dt.date, int, int]] = []
+    for item in official_days:
+        if not isinstance(item, dict):
+            continue
+        day_value = item.get("date")
+        official_tokens = _nonnegative_token_count(item.get("tokens"))
+        if not isinstance(day_value, str) or not official_tokens:
+            continue
+        try:
+            day = dt.date.fromisoformat(day_value)
+        except ValueError:
+            continue
+        local_tokens = _nonnegative_token_count(local_totals.get(day_value))
+        if (
+            cutoff <= day < today
+            and local_tokens is not None
+            and local_tokens > 0
+        ):
+            samples.append((day, official_tokens, local_tokens))
+
+    if samples:
+        latest_day, official_tokens, local_tokens = max(samples)
+        latest_factor = official_tokens / local_tokens
+        if _valid_calibration_factor(latest_factor):
+            return (
+                int(math.floor(local_today * latest_factor + 0.5)),
+                "local_thread_tokens_recent_calibration",
+                latest_day.isoformat(),
+            )
+
+    return local_today, "local_thread_tokens_uncalibrated", None
 
 
 def _display_width(value: str) -> int:
@@ -447,16 +921,9 @@ class RecentTaskReader:
         self._codex_home = codex_home
 
     def read(self) -> list[dict[str, Any]]:
-        state_db = _latest_state_db(self._codex_home)
-        if state_db is None or not state_db.is_file():
-            raise FileNotFoundError("Codex thread index is unavailable")
-
+        state_db = _thread_index_path(self._codex_home)
         with _connect_read_only(state_db) as connection:
-            columns = {
-                str(row[1])
-                for row in connection.execute("PRAGMA table_info(threads)")
-                if len(row) > 1
-            }
+            columns = _thread_columns(connection)
             if "id" not in columns:
                 raise sqlite3.DatabaseError("Codex thread index is incomplete")
 
@@ -564,6 +1031,7 @@ def main() -> int:
 
     unavailable_usage = {
         "today": None,
+        **_today_estimate_payload(),
         "seven_days": 0,
         "ninety_days": 0,
         "days": [],

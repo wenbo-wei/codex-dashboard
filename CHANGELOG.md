@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0 - 2026-07-30
+
+- Replace the perpetually pending Today label with a clearly marked local
+  estimate, calibrated against the most recent comparable official day.
+- Keep the live estimate monotonic with a small numeric-only runtime snapshot.
+- Keep official current-day values authoritative and leave 7-day, 90-day, and
+  calendar activity fully official.
+- Optically balance the upper and lower whitespace in the Token activity card.
+
 ## 1.2.0 - 2026-07-30
 
 - Show a pending Today value and calendar state when the official current-day

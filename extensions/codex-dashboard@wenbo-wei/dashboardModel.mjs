@@ -72,12 +72,21 @@ export function formatTokens(value) {
 }
 
 
-export function formatTodayTokens(value, currentDayAvailable) {
-    if (currentDayAvailable !== true ||
-        value === null ||
-        value === undefined)
-        return 'Pending';
-    return formatTokens(value);
+export function formatTodayTokens(
+    value,
+    currentDayAvailable,
+    estimate = null
+) {
+    if (currentDayAvailable === true &&
+        value !== null &&
+        value !== undefined)
+        return formatTokens(value);
+
+    if (typeof estimate === 'number' &&
+        Number.isFinite(estimate) &&
+        estimate >= 0)
+        return `~${formatTokens(estimate)}`;
+    return 'Pending';
 }
 
 

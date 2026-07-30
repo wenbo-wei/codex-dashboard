@@ -352,6 +352,7 @@ class CodexDashboardButton extends PanelMenu.Button {
             style_class: 'codex-dashboard-overview-usage-content',
             x_expand: true,
             y_align: Clutter.ActorAlign.CENTER,
+            translation_y: 4,
         });
         usageContent.add_child(new St.Label({
             text: 'Token activity',
@@ -845,7 +846,10 @@ class CodexDashboardButton extends PanelMenu.Button {
         }
         this._usageToday.text = formatTodayTokens(
             usage?.today,
-            usage?.current_day_available === true
+            usage?.current_day_available === true,
+            usage?.today_is_estimate === true
+                ? usage?.today_estimate
+                : null
         );
         this._usageNinetyDays.text = formatTokens(usage?.ninety_days);
         this._usageWeek.text = formatTokens(usage?.seven_days);

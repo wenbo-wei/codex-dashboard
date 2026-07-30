@@ -3,7 +3,7 @@
 A small, local-first GNOME Shell 50 extension that shows:
 
 - the current Codex quota;
-- official Today, 7-day, and 90-day token activity;
+- an approximate live Today value plus official 7-day and 90-day token activity;
 - five recent terminal tasks, one concise sentence per root Codex session.
 
 Task titles keep the user's language and wording. There is no fixed task
@@ -38,19 +38,27 @@ GNOME extension lists, shared icon cache, and user-service state.
 
 - `extension.js` renders the GNOME top-panel button and menu.
 - `codex-dashboard-data` reads the local Codex thread index in SQLite
-  read-only mode and turns each recent root session into one task sentence.
+  read-only mode, turns each recent root session into one task sentence, and
+  reads numeric token counters for the live Today estimate. A small aggregate
+  snapshot in the user runtime directory keeps that estimate monotonic without
+  storing session text.
 - `codex-quota` publishes live quota state for the extension.
-- Official token and quota data come from the locally installed Codex CLI
-  app-server.
+- Official historical token and quota data come from the locally installed
+  Codex CLI app-server.
 
-If the official service has not published today's bucket yet, Today and the
-current calendar day show **Pending** rather than a misleading zero. An
-explicitly published zero remains `0`, and known 7-day and 90-day totals remain
+If the official service has not published today's bucket yet, the dashboard
+seeds numeric token totals from the local thread index by thread start day,
+then counts aggregate counter growth and calibrates it against the most recent
+comparable settled day. Today is prefixed with `~` so the result cannot be
+mistaken for an official value. An official current-day value, including `0`,
+always takes precedence. The 7-day and 90-day totals and calendar remain
+official; Today falls back to **Pending** if no safe local estimate is
 available.
 
 Subagents, archived sessions, injected instructions, skill prefixes, and image
-placeholders are excluded from task rows. No session text is uploaded by this
-project and no model request is made to generate task titles.
+placeholders are excluded from task rows. The estimator reads numeric counters,
+not message text. No session text is uploaded by this project and no model
+request is made to generate task titles.
 
 ## Repository layout
 

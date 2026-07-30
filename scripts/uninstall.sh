@@ -35,6 +35,8 @@ xdg_data_home=${XDG_DATA_HOME:-"$home_dir/.local/share"}
 require_absolute_path XDG_DATA_HOME "$xdg_data_home"
 xdg_config_home=${XDG_CONFIG_HOME:-"$home_dir/.config"}
 require_absolute_path XDG_CONFIG_HOME "$xdg_config_home"
+xdg_runtime_dir=${XDG_RUNTIME_DIR:-"/run/user/$(id -u)"}
+require_absolute_path XDG_RUNTIME_DIR "$xdg_runtime_dir"
 dashboard_lib_dir="$home_dir/.local/lib/codex-dashboard"
 extension_dir="$xdg_data_home/gnome-shell/extensions/$extension_uuid"
 legacy_extension_dir="$xdg_data_home/gnome-shell/extensions/$legacy_extension_uuid"
@@ -62,6 +64,7 @@ rm -f \
     "$home_dir/.local/bin/codex-dashboard-data" \
     "$home_dir/.local/bin/codex-quota" \
     "$xdg_config_home/systemd/user/codex-quota.service" \
+    "$xdg_runtime_dir/codex-dashboard-today.json" \
     "$icon_theme_dir/scalable/apps/codex-dashboard-symbolic.svg"
 rm -f \
     "$dashboard_lib_dir/codex_app_server.py" \

@@ -7,11 +7,22 @@ This document records the current product constraints.
 - The GNOME Shell extension is named **Codex Dashboard**.
 - Its UUID is `codex-dashboard@wenbo-wei`; installation migrates the legacy
   local UUID so only one dashboard remains enabled.
-- The dashboard continues to show the live Codex quota and official token
-  activity already provided by the installed version.
-- A missing official current-day bucket is unknown, not zero: Today and the
-  current calendar day show pending, while an explicit zero stays zero and
-  known 7-day and 90-day totals remain available.
+- The dashboard shows the live Codex quota, official historical token activity,
+  and a clearly marked approximate Today value while the official current-day
+  bucket is pending.
+- Estimate Today from read-only numeric counters in the local thread index.
+  Seed recent totals by thread start day, then use a small aggregate runtime
+  snapshot to count subsequent counter growth on every thread. Never read
+  session message text for this estimate.
+- Keep the estimate monotonic within a local day and calibrate it against the
+  most recent comparable official day.
+- Keep the estimate separate from the official value and prefix it with `~`.
+  An official current-day bucket, including an explicit zero, always wins.
+  Known 7-day and 90-day totals and the calendar remain fully official.
+- If neither an official current-day bucket nor a valid local estimate is
+  available, Today remains pending rather than becoming a misleading zero.
+- Keep the Token activity title's upper optical gap equal to the lower gap
+  beneath the final value without changing the overview card's geometry.
 
 ## Task overview
 
