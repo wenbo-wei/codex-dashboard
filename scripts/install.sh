@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+project_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 local_bin_dir="$HOME/.local/bin"
 dashboard_lib_dir="$HOME/.local/lib/codex-dashboard"
 extension_dir="$HOME/.local/share/gnome-shell/extensions/codex-quota-centre@local"
