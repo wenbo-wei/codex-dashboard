@@ -1,0 +1,448 @@
+/* Codex Dashboard stylesheet for GNOME Shell 50. */
+.codex-dashboard-panel-box {
+  spacing: 4px;
+}
+
+.codex-dashboard-panel-icon {
+  icon-size: 15px;
+}
+
+/*
+ * Use the native date pill as the spacing baseline. The clock already has
+ * 0.818em of inner padding, so remove its duplicate invisible outer padding.
+ */
+#panel .panel-button.clock-display.codex-dashboard-clock-button {
+  -natural-hpadding: 0px;
+  -minimum-hpadding: 0px;
+}
+
+#panel .panel-button.codex-dashboard-centre-button {
+  -natural-hpadding: 0.818em;
+  -minimum-hpadding: 0.818em;
+}
+
+.codex-dashboard-menu .popup-menu-content {
+  padding: 6px;
+  color: #302e39;
+}
+
+/* Current-session compatibility for the pre-v11 cached wrapper. */
+.codex-dashboard-shell-item,
+.codex-dashboard-shell-item:hover,
+.codex-dashboard-shell-item:focus {
+  padding: 0;
+  background-color: transparent;
+}
+
+.codex-dashboard-root {
+  width: 590px;
+  spacing: 8px;
+  font-size: 17px;
+  color: #302e39;
+}
+
+/* Remove the two empty footer gaps left by the cached pre-v11 menu wrapper.
+ * The native menu structure loaded on the next login has no matching parent. */
+.codex-dashboard-shell-item .codex-dashboard-root {
+  margin-bottom: -14px;
+}
+
+.codex-dashboard-muted {
+  color: #716d7c;
+}
+
+.codex-dashboard-card {
+  spacing: 13px;
+  padding: 19px 20px;
+  border-radius: 22px;
+  border: 1px solid #dedbe6;
+  background-color: #ffffff;
+  box-shadow: 0 3px 12px rgba(31, 27, 45, 0.10);
+}
+
+.codex-dashboard-quota-card {
+  spacing: 0;
+  background-gradient-direction: horizontal;
+  background-gradient-start: #e6dfff;
+  background-gradient-end: #ffffff;
+}
+
+/* Current-session compatibility: the cached v8 actor still has this header. */
+.codex-dashboard-quota-card > .codex-dashboard-card-header {
+  height: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+}
+
+.codex-dashboard-card-header {
+  spacing: 11px;
+}
+
+.codex-dashboard-card-title {
+  font-size: 18px;
+  font-weight: 650;
+  color: #3a3744;
+}
+
+.codex-dashboard-badge {
+  padding: 4px 11px;
+  border-radius: 11px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #625e6d;
+  background-color: #e8e6ed;
+}
+
+.codex-dashboard-badge.badge-live {
+  color: #087c63;
+  background-color: #d8f3eb;
+}
+
+.codex-dashboard-badge.badge-warning {
+  color: #946200;
+  background-color: #f7e8c8;
+}
+
+.codex-dashboard-badge.badge-muted {
+  color: #817c8b;
+}
+
+.codex-dashboard-quota-content {
+  spacing: 24px;
+}
+
+.codex-dashboard-quota-details {
+  spacing: 5px;
+  padding-top: 6px;
+}
+
+.codex-dashboard-quota-title-row {
+  spacing: 10px;
+}
+
+.codex-dashboard-ring-value {
+  font-size: 40px;
+  font-weight: 750;
+}
+
+.codex-dashboard-ring-caption {
+  font-size: 15px;
+  color: #777281;
+}
+
+.codex-dashboard-quota-window {
+  font-size: 27px;
+  font-weight: 700;
+  color: #3b3748;
+}
+
+.codex-dashboard-reset {
+  padding-top: 2px;
+  font-size: 17px;
+  font-weight: 600;
+  color: #674ed1;
+}
+
+.codex-dashboard-progress {
+  margin-top: 4px;
+  margin-bottom: 2px;
+}
+
+.codex-dashboard-muted {
+  font-size: 15px;
+}
+
+.codex-dashboard-quota-plan {
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #716d7c;
+  background-color: #eeecf3;
+}
+
+.codex-dashboard-metrics {
+  spacing: 19px;
+}
+
+.codex-dashboard-metric {
+  spacing: 4px;
+}
+
+.codex-dashboard-metric-title {
+  font-size: 16px;
+  color: #706b7a;
+}
+
+.codex-dashboard-metric-value {
+  font-size: 35px;
+  font-weight: 720;
+  color: #3a3744;
+}
+
+.codex-dashboard-metric-separator {
+  width: 1px;
+  background-color: #dfdce6;
+}
+
+/* Combined quota and token overview. */
+.codex-dashboard-overview-card {
+  spacing: 0;
+  padding: 0;
+  background-gradient-direction: horizontal;
+  background-gradient-start: #e8e1ff;
+  background-gradient-end: #ffffff;
+}
+
+.codex-dashboard-overview-card.quota-stale {
+  border-color: #d7c78f;
+}
+
+.codex-dashboard-overview-card.quota-stale .codex-dashboard-reset {
+  color: #8a6a1e;
+}
+
+.codex-dashboard-overview-card.quota-unavailable .codex-dashboard-quota-window,
+.codex-dashboard-overview-card.quota-unavailable .codex-dashboard-quota-plan {
+  color: #817c8b;
+}
+
+.codex-dashboard-overview-quota {
+  spacing: 8px;
+  padding: 12px 15px;
+}
+
+.codex-dashboard-overview-details {
+  spacing: 6px;
+}
+
+.codex-dashboard-overview-details .codex-dashboard-quota-plan {
+  padding: 2px 9px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.codex-dashboard-overview-details .codex-dashboard-quota-window {
+  margin-left: 9px;
+  font-size: 21px;
+}
+
+.codex-dashboard-overview-details .codex-dashboard-progress,
+.codex-dashboard-overview-details .codex-dashboard-reset,
+.codex-dashboard-overview-details .codex-dashboard-reset-date {
+  margin-left: 9px;
+}
+
+.codex-dashboard-overview-details .codex-dashboard-reset {
+  padding-top: 0;
+  font-size: 15px;
+}
+
+.codex-dashboard-reset-date {
+  font-size: 13px;
+  font-weight: 500;
+  color: #716d7c;
+}
+
+.codex-dashboard-overview-usage {
+  padding: 0 23px;
+  border-left: 1px solid #dedbe6;
+  background-color: rgba(255, 255, 255, 0.72);
+}
+
+.codex-dashboard-overview-usage-content {
+  spacing: 0;
+}
+
+.codex-dashboard-usage-title {
+  height: 24px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #3a3744;
+}
+
+.codex-dashboard-usage-row {
+  height: 56px;
+  spacing: 9px;
+  border-top: 1px solid #e4e1e9;
+}
+
+.codex-dashboard-usage-label {
+  font-size: 14px;
+  color: #706b7a;
+}
+
+.codex-dashboard-usage-value {
+  font-size: 28px;
+  font-weight: 720;
+  color: #3a3744;
+}
+
+.codex-dashboard-task-row {
+  spacing: 11px;
+  padding: 4px 0;
+}
+
+.codex-dashboard-task-dot {
+  font-size: 14px;
+  padding-top: 3px;
+}
+
+.codex-dashboard-task-dot.task-live {
+  color: #18a981;
+}
+
+.codex-dashboard-task-dot.task-done {
+  color: #7657ed;
+}
+
+.codex-dashboard-task-dot.task-warning {
+  color: #b47710;
+}
+
+.codex-dashboard-task-dot.task-neutral {
+  color: #8b8695;
+}
+
+.codex-dashboard-task-title {
+  max-width: 380px;
+  font-size: 16px;
+  color: #403d49;
+}
+
+.codex-dashboard-task-meta {
+  font-size: 14px;
+  color: #777281;
+}
+
+.codex-dashboard-history-card {
+  padding: 19px 18px;
+}
+
+.codex-dashboard-calendars {
+  spacing: 11px;
+}
+
+.codex-dashboard-calendar-month {
+  padding: 11px 10px 10px;
+  border: 1px solid #e2dfea;
+  border-radius: 15px;
+  background-color: #faf9fc;
+}
+
+.codex-dashboard-calendar-month-name {
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #4a4653;
+}
+
+.codex-dashboard-calendar-weekdays {
+  spacing: 4px;
+  margin-bottom: 4px;
+}
+
+.codex-dashboard-calendar-weekday {
+  height: 13px;
+  font-size: 8px;
+  font-weight: 700;
+  color: #8b8693;
+}
+
+.codex-dashboard-calendar-weeks {
+  spacing: 4px;
+}
+
+.codex-dashboard-calendar-week {
+  spacing: 4px;
+}
+
+.codex-dashboard-calendar-day {
+  border-radius: 5px;
+  font-size: 7px;
+  font-weight: 700;
+  color: rgba(52, 47, 65, 0.66);
+}
+
+.codex-dashboard-heatmap {
+  spacing: 7px;
+}
+
+.codex-dashboard-heat-column {
+  spacing: 6px;
+}
+
+.codex-dashboard-heat-cell {
+  width: 36px;
+  height: 20px;
+  border-radius: 6px;
+}
+
+.codex-dashboard-heat-cell.heat-level-0 {
+  background-color: #e3e1e9;
+}
+
+.codex-dashboard-calendar-day.heat-level-0 {
+  background-color: #e3e1e9;
+}
+
+.codex-dashboard-heat-cell.heat-level-1 {
+  background-color: #d5ccff;
+}
+
+.codex-dashboard-calendar-day.heat-level-1 {
+  background-color: #d5ccff;
+}
+
+.codex-dashboard-heat-cell.heat-level-2 {
+  background-color: #b9a8ff;
+}
+
+.codex-dashboard-calendar-day.heat-level-2 {
+  background-color: #b9a8ff;
+}
+
+.codex-dashboard-heat-cell.heat-level-3 {
+  background-color: #957eff;
+}
+
+.codex-dashboard-calendar-day.heat-level-3 {
+  background-color: #957eff;
+}
+
+.codex-dashboard-heat-cell.heat-level-4 {
+  background-color: #7658f4;
+}
+
+.codex-dashboard-calendar-day.heat-level-4 {
+  background-color: #7658f4;
+}
+
+.codex-dashboard-heat-legend {
+  spacing: 5px;
+}
+
+.codex-dashboard-heat-legend .codex-dashboard-muted {
+  font-size: 12px;
+}
+
+.codex-dashboard-heat-cell.codex-dashboard-heat-legend-cell {
+  width: 15px;
+  height: 12px;
+  border-radius: 4px;
+}
+
+/* Collapse action actors retained by GNOME's current-session JS cache. */
+.codex-dashboard-actions,
+.codex-dashboard-action-button,
+.codex-dashboard-action-content,
+.codex-dashboard-sync-label {
+  height: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  spacing: 0;
+  opacity: 0;
+}

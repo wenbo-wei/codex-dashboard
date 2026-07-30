@@ -1,0 +1,938 @@
+#!/usr/bin/python3
+"""Event-driven Codex Dashboard quota state publisher.
+
+The normal desktop service runs headlessly and publishes a small state file
+for the GNOME extension. A legacy StatusNotifierItem mode remains available
+for compatibility and tests.
+"""
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import fcntl
+import math
+import os
+from pathlib import Path
+import signal
+import sys
+import time
+
+import dbus
+import dbus.service
+from dbus.mainloop.glib import DBusGMainLoop
+from gi.repository import Gio, GLib, GLibUnix
+
+DASHBOARD_LIB_DIR = Path(
+    os.environ.get(
+        "CODEX_DASHBOARD_LIB_DIR",
+        Path.home() / ".local/lib/codex-dashboard",
+    )
+)
+if str(DASHBOARD_LIB_DIR) not in sys.path:
+    sys.path.insert(0, str(DASHBOARD_LIB_DIR))
+
+from quota_snapshot import (  # noqa: E402
+    LIVE_QUERY_INTERVAL_SECONDS,
+    SESSIONS_DIR,
+    LiveSnapshotReader,
+    SnapshotLoadResult,
+    SnapshotLoader,
+    write_state_file,
+)
+from quota_sni import (  # noqa: E402
+    BUS_NAME,
+    NOTIFICATIONS_INTERFACE,
+    NOTIFICATIONS_NAME,
+    NOTIFICATIONS_PATH,
+    WATCHER_INTERFACE,
+    WATCHER_NAME,
+    WATCHER_PATH,
+    HeadlessMenu,
+    HeadlessStatusItem,
+    LinkDbusMenu,
+    StatusNotifierItem,
+    format_panel_label,
+    format_refresh_label,
+)
+
+
+DEBOUNCE_MILLISECONDS = 1200
+MAX_DEBOUNCE_MILLISECONDS = 5000
+FRESHNESS_DEADLINE_SECONDS = 300.0
+REGISTRATION_RETRY_MAX_SECONDS = 60
+REGISTRATION_ERROR_HEARTBEAT_SECONDS = 15 * 60
+SPINNER_INTERVAL_MILLISECONDS = 120
+SPINNER_FRAMES = (
+    "⠋",
+    "⠙",
+    "⠹",
+    "⠸",
+    "⠼",
+    "⠴",
+    "⠦",
+    "⠧",
+    "⠇",
+    "⠏",
+)
+FAILURE_NOTIFICATION_THRESHOLD = 3
+
+
+class CodexQuotaApplication:
+    def __init__(
+        self,
+        sessions_dir: Path = SESSIONS_DIR,
+        *,
+        headless: bool = False,
+    ) -> None:
+        DBusGMainLoop(set_as_default=True)
+        self._lock_handle = self._acquire_single_instance_lock()
+        self._headless = headless
+        self._sessions_dir = sessions_dir
+        self._loop = GLib.MainLoop()
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="codex-quota-reader"
+        )
+        self._live_reader = LiveSnapshotReader()
+        self._snapshot_loader = SnapshotLoader(
+            sessions_dir,
+            self._live_reader,
+            time.monotonic,
+        )
+        self._refresh_running = False
+        self._refresh_queued = False
+        self._queued_force = False
+        self._debounce_source = 0
+        self._debounce_started_at: float | None = None
+        self._live_due_source = 0
+        self._live_due_at: float | None = None
+        self._freshness_deadline_source = 0
+        self._freshness_deadline_at: float | None = None
+        self._quota_dirty = True
+        self._dirty_generation = 0
+        self._watcher_retry_source = 0
+        self._registration_retry_seconds = 1
+        self._registration_attempt = 0
+        self._registration_pending = False
+        self._registration_error_key: str | None = None
+        self._last_registration_error_log_at: float | None = None
+        self._spinner_source = 0
+        self._spinner_index = 0
+        self._spinner_base_label: str | None = None
+        self._consecutive_live_failures = 0
+        self._failure_notification_sent = False
+        self._clock = time.monotonic
+        self._monitors: dict[Path, Gio.FileMonitor] = {}
+        self._network_monitor: Gio.NetworkMonitor | None = None
+        self._network_signal = 0
+        self._network_available = True
+        self._stopping = False
+
+        self._bus = dbus.SessionBus()
+        self._bus_name = None
+        if self._headless:
+            self._menu = HeadlessMenu()
+            self._item = HeadlessStatusItem()
+        else:
+            self._bus_name = dbus.service.BusName(
+                BUS_NAME,
+                bus=self._bus,
+                allow_replacement=False,
+                replace_existing=False,
+                do_not_queue=True,
+            )
+            self._menu = LinkDbusMenu(self._bus_name)
+            self._item = StatusNotifierItem(
+                self._bus_name,
+                self.refresh_now,
+            )
+            self._bus.add_signal_receiver(
+                self._watcher_owner_changed,
+                signal_name="NameOwnerChanged",
+                dbus_interface=dbus.BUS_DAEMON_IFACE,
+                bus_name=dbus.BUS_DAEMON_NAME,
+                path=dbus.BUS_DAEMON_PATH,
+                arg0=WATCHER_NAME,
+            )
+            self._bus.add_signal_receiver(
+                self._item_unregistered,
+                signal_name="StatusNotifierItemUnregistered",
+                dbus_interface=WATCHER_INTERFACE,
+                bus_name=WATCHER_NAME,
+                path=WATCHER_PATH,
+            )
+        try:
+            self._network_monitor = Gio.NetworkMonitor.get_default()
+            self._network_available = bool(
+                self._network_monitor.get_network_available()
+            )
+            self._network_signal = self._network_monitor.connect(
+                "network-changed",
+                self._network_changed,
+            )
+        except Exception as error:
+            self._network_monitor = None
+            self._network_signal = 0
+            self._network_available = True
+            print(
+                f"codex-quota: cannot monitor network state: {error}",
+                file=sys.stderr,
+            )
+
+    @staticmethod
+    def _acquire_single_instance_lock():
+        runtime_directory = Path(
+            os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        )
+        runtime_directory.mkdir(parents=True, exist_ok=True)
+        handle = (runtime_directory / "codex-quota.lock").open("w")
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        handle.write(f"{os.getpid()}\n")
+        handle.flush()
+        return handle
+
+    def run(self) -> None:
+        self._watch_sessions_or_parent()
+        if not self._headless:
+            self._register_indicator()
+        if self._network_available:
+            self.refresh_now(force_live=True)
+        else:
+            self._start_refresh_animation(
+                base_label=self._item.get_label(),
+                replace_known=True,
+            )
+        GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, self.stop)
+        GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, self.stop)
+        self._loop.run()
+
+    def stop(self) -> bool:
+        if self._stopping:
+            return GLib.SOURCE_REMOVE
+        self._stopping = True
+        network_monitor = getattr(self, "_network_monitor", None)
+        network_signal = getattr(self, "_network_signal", 0)
+        self._network_monitor = None
+        self._network_signal = 0
+        if network_monitor is not None and network_signal:
+            try:
+                network_monitor.disconnect(network_signal)
+            except (TypeError, RuntimeError):
+                pass
+        if self._debounce_source:
+            GLib.source_remove(self._debounce_source)
+            self._debounce_source = 0
+        self._debounce_started_at = None
+        if self._live_due_source:
+            GLib.source_remove(self._live_due_source)
+            self._live_due_source = 0
+        self._live_due_at = None
+        self._cancel_freshness_deadline()
+        if self._watcher_retry_source:
+            GLib.source_remove(self._watcher_retry_source)
+            self._watcher_retry_source = 0
+        self._stop_refresh_animation(restore_label=False)
+        self._registration_attempt += 1
+        self._registration_pending = False
+        for monitor in self._monitors.values():
+            monitor.cancel()
+        self._monitors.clear()
+        self._live_reader.cancel()
+        self._executor.shutdown(wait=True, cancel_futures=True)
+        self._loop.quit()
+        return GLib.SOURCE_REMOVE
+
+    def _network_changed(
+        self,
+        _monitor: Gio.NetworkMonitor | None,
+        available: bool,
+    ) -> None:
+        was_available = getattr(self, "_network_available", True)
+        self._network_available = bool(available)
+        if self._stopping:
+            return
+
+        if not self._network_available:
+            self._quota_dirty = True
+            self._dirty_generation += 1
+            self._cancel_live_due()
+            self._cancel_freshness_deadline()
+            snapshot_loader = getattr(self, "_snapshot_loader", None)
+            stale = (
+                snapshot_loader.mark_current_stale()
+                if snapshot_loader is not None
+                else None
+            )
+            if stale is not None:
+                write_state_file(stale)
+                self._menu.set_snapshot(stale)
+            base_label = (
+                self._spinner_base_label or self._item.get_label()
+            )
+            self._start_refresh_animation(
+                base_label=base_label,
+                replace_known=True,
+            )
+            return
+
+        if was_available and not self._spinner_source:
+            return
+        self._quota_dirty = True
+        self._dirty_generation += 1
+        self._cancel_live_due()
+        self._cancel_freshness_deadline()
+        self.refresh_now(force_live=True)
+
+    def _watch_sessions_or_parent(self) -> None:
+        parent = self._sessions_dir.parent
+        while not parent.exists() and parent != parent.parent:
+            parent = parent.parent
+        if parent.is_dir():
+            self._watch_directory(parent)
+        if self._sessions_dir.is_dir():
+            self._watch_tree(self._sessions_dir)
+
+    def _watch_tree(self, root: Path) -> None:
+        if not root.is_dir():
+            return
+        for current_root, directories, _files in os.walk(root):
+            self._watch_directory(Path(current_root))
+            directories[:] = [
+                directory
+                for directory in directories
+                if not (Path(current_root) / directory).is_symlink()
+            ]
+
+    def _watch_directory(self, path: Path) -> None:
+        path = path.resolve()
+        if path in self._monitors:
+            return
+        try:
+            monitor = Gio.File.new_for_path(str(path)).monitor_directory(
+                Gio.FileMonitorFlags.WATCH_MOVES, None
+            )
+        except GLib.Error as error:
+            print(
+                f"codex-quota: cannot monitor {path}: {error.message}",
+                file=sys.stderr,
+            )
+            return
+        monitor.connect("changed", self._file_changed)
+        self._monitors[path] = monitor
+
+    def _drop_monitors_below(self, path: Path) -> None:
+        path = path.resolve()
+        for monitored_path in list(self._monitors):
+            if monitored_path == path or path in monitored_path.parents:
+                self._monitors.pop(monitored_path).cancel()
+
+    def _is_in_sessions_tree(self, path: Path) -> bool:
+        resolved = path.resolve()
+        sessions_root = self._sessions_dir.resolve()
+        return resolved == sessions_root or sessions_root in resolved.parents
+
+    def _is_sessions_ancestor(self, path: Path) -> bool:
+        return path.resolve() in self._sessions_dir.resolve().parents
+
+    def _file_changed(
+        self,
+        _monitor: Gio.FileMonitor,
+        file: Gio.File,
+        other_file: Gio.File | None,
+        event_type: Gio.FileMonitorEvent,
+    ) -> None:
+        file_path_text = file.get_path()
+        if not file_path_text:
+            return
+        path = Path(file_path_text)
+        other_path: Path | None = None
+        if other_file is not None:
+            other_path_text = other_file.get_path()
+            if other_path_text:
+                other_path = Path(other_path_text)
+
+        path_is_relevant = self._is_in_sessions_tree(path)
+        path_is_ancestor = self._is_sessions_ancestor(path)
+        other_is_relevant = (
+            other_path is not None and self._is_in_sessions_tree(other_path)
+        )
+        other_is_ancestor = (
+            other_path is not None and self._is_sessions_ancestor(other_path)
+        )
+        if (
+            not path_is_relevant
+            and not path_is_ancestor
+            and not other_is_relevant
+            and not other_is_ancestor
+        ):
+            return
+
+        removed_events = {
+            Gio.FileMonitorEvent.DELETED,
+            Gio.FileMonitorEvent.MOVED_OUT,
+            Gio.FileMonitorEvent.UNMOUNTED,
+        }
+        if event_type in removed_events:
+            if path_is_relevant or path_is_ancestor:
+                self._drop_monitors_below(path)
+            self._schedule_refresh()
+            return
+
+        if event_type == Gio.FileMonitorEvent.RENAMED:
+            if path_is_relevant or path_is_ancestor:
+                self._drop_monitors_below(path)
+            if other_is_ancestor:
+                self._watch_sessions_or_parent()
+            elif other_is_relevant and other_path is not None and other_path.is_dir():
+                self._watch_tree(other_path)
+            self._schedule_refresh()
+            return
+
+        if path_is_ancestor:
+            self._watch_sessions_or_parent()
+            self._schedule_refresh()
+            return
+        if path.is_dir():
+            self._watch_tree(path)
+            self._schedule_refresh()
+            return
+        if path.suffix == ".jsonl":
+            self._schedule_refresh()
+
+    def _schedule_refresh(self) -> None:
+        if self._stopping:
+            return
+        self._cancel_freshness_deadline()
+        self._quota_dirty = True
+        self._dirty_generation += 1
+        now = time.monotonic()
+        if self._debounce_started_at is None:
+            self._debounce_started_at = now
+        deadline = min(
+            now + DEBOUNCE_MILLISECONDS / 1000.0,
+            self._debounce_started_at + MAX_DEBOUNCE_MILLISECONDS / 1000.0,
+        )
+        if self._debounce_source:
+            GLib.source_remove(self._debounce_source)
+        delay_milliseconds = max(1, math.ceil((deadline - now) * 1000))
+        self._debounce_source = GLib.timeout_add(
+            delay_milliseconds,
+            self._debounce_elapsed,
+            priority=GLib.PRIORITY_DEFAULT,
+        )
+
+    def _debounce_elapsed(self) -> bool:
+        self._debounce_source = 0
+        self._debounce_started_at = None
+        self._request_dirty_refresh()
+        return GLib.SOURCE_REMOVE
+
+    def _cancel_live_due(self) -> None:
+        if self._live_due_source:
+            GLib.source_remove(self._live_due_source)
+            self._live_due_source = 0
+        self._live_due_at = None
+
+    def _schedule_live_due(self, delay_seconds: float) -> None:
+        if self._stopping:
+            return
+        now = time.monotonic()
+        deadline = now + max(0.0, delay_seconds)
+        if (
+            self._live_due_source
+            and self._live_due_at is not None
+            and self._live_due_at <= deadline + 0.01
+        ):
+            return
+        self._cancel_live_due()
+        self._live_due_at = deadline
+        self._live_due_source = GLib.timeout_add(
+            max(1, math.ceil(max(0.0, deadline - now) * 1000)),
+            self._live_due_elapsed,
+            priority=GLib.PRIORITY_DEFAULT,
+        )
+
+    def _live_due_elapsed(self) -> bool:
+        self._live_due_source = 0
+        self._live_due_at = None
+        if self._quota_dirty and not self._stopping:
+            self.refresh_now()
+        return GLib.SOURCE_REMOVE
+
+    def _cancel_freshness_deadline(self) -> None:
+        source = getattr(self, "_freshness_deadline_source", 0)
+        self._freshness_deadline_source = 0
+        self._freshness_deadline_at = None
+        if source:
+            GLib.source_remove(source)
+
+    def _schedule_freshness_deadline(
+        self,
+        delay_seconds: float = FRESHNESS_DEADLINE_SECONDS,
+    ) -> None:
+        """Schedule a metadata-only transition from ready to stale."""
+        if self._stopping:
+            return
+        self._cancel_live_due()
+        self._cancel_freshness_deadline()
+        now = time.monotonic()
+        deadline = now + max(0.0, delay_seconds)
+        self._freshness_deadline_at = deadline
+        self._freshness_deadline_source = GLib.timeout_add(
+            max(1, math.ceil(max(0.0, deadline - now) * 1000)),
+            self._freshness_deadline_elapsed,
+            priority=GLib.PRIORITY_DEFAULT,
+        )
+
+    def _freshness_deadline_elapsed(self) -> bool:
+        """Mark cached quota stale without starting an app-server query."""
+        self._freshness_deadline_source = 0
+        self._freshness_deadline_at = None
+        if self._stopping:
+            return GLib.SOURCE_REMOVE
+
+        self._quota_dirty = True
+        self._dirty_generation += 1
+        stale = self._snapshot_loader.mark_current_stale(
+            source="freshness-deadline",
+        )
+        if stale is not None:
+            write_state_file(stale)
+            self._menu.set_snapshot(stale)
+            self._item.set_label(format_panel_label(stale))
+        return GLib.SOURCE_REMOVE
+
+    def _request_dirty_refresh(self) -> None:
+        if not self._quota_dirty or self._stopping:
+            return
+        retry_after = self._snapshot_loader.seconds_until_live_query()
+        if retry_after > 0:
+            self._schedule_live_due(retry_after)
+            return
+        self.refresh_now()
+
+    def refresh_now(self, *, force_live: bool = False) -> None:
+        if self._stopping:
+            return
+        self._cancel_freshness_deadline()
+        if not getattr(self, "_network_available", True):
+            self._quota_dirty = True
+            base_label = (
+                self._spinner_base_label or self._item.get_label()
+            )
+            self._start_refresh_animation(
+                base_label=base_label,
+                replace_known=True,
+            )
+            return
+        if self._refresh_running:
+            self._refresh_queued = True
+            self._queued_force = self._queued_force or force_live
+            return
+        self._refresh_running = True
+        self._start_refresh_animation()
+        refresh_generation = self._dirty_generation
+        try:
+            future = self._executor.submit(
+                self._snapshot_loader.load_result,
+                force_live=force_live,
+            )
+        except Exception:
+            self._refresh_running = False
+            self._stop_refresh_animation()
+            raise
+        future.add_done_callback(
+            lambda completed: self._queue_finished_refresh(
+                completed,
+                refresh_generation,
+            )
+        )
+
+    def _queue_finished_refresh(
+        self,
+        completed: concurrent.futures.Future,
+        refresh_generation: int,
+    ) -> None:
+        if not self._stopping:
+            GLib.idle_add(
+                self._finish_refresh,
+                completed,
+                refresh_generation,
+                priority=GLib.PRIORITY_DEFAULT,
+            )
+
+    def _finish_refresh(
+        self,
+        future: concurrent.futures.Future,
+        refresh_generation: int,
+    ) -> bool:
+        outcome: SnapshotLoadResult | None = None
+        try:
+            outcome = future.result()
+            if self._stopping:
+                return GLib.SOURCE_REMOVE
+            snapshot = outcome.snapshot
+            write_state_file(snapshot)
+            self._menu.set_snapshot(snapshot)
+            self._record_live_outcome(outcome)
+            panel_label = format_panel_label(snapshot)
+            network_available = getattr(
+                self,
+                "_network_available",
+                True,
+            )
+            if outcome.live_succeeded and network_available:
+                self._stop_refresh_animation(restore_label=False)
+                self._item.set_label(panel_label)
+                self._schedule_freshness_deadline(
+                    FRESHNESS_DEADLINE_SECONDS
+                )
+                if refresh_generation == self._dirty_generation:
+                    self._quota_dirty = False
+                else:
+                    self._quota_dirty = True
+                    self._schedule_live_due(outcome.retry_after_seconds)
+            elif outcome.live_succeeded:
+                self._update_refresh_animation_base(panel_label)
+                self._quota_dirty = True
+                self._cancel_live_due()
+            elif outcome.live_attempted:
+                self._update_refresh_animation_base(panel_label)
+                self._quota_dirty = True
+                if network_available:
+                    self._schedule_live_due(outcome.retry_after_seconds)
+                else:
+                    self._cancel_live_due()
+            elif self._quota_dirty:
+                if network_available:
+                    self._start_refresh_animation()
+                    self._schedule_live_due(outcome.retry_after_seconds)
+                else:
+                    self._update_refresh_animation_base(panel_label)
+                    self._cancel_live_due()
+            else:
+                self._stop_refresh_animation(restore_label=False)
+                self._item.set_label(panel_label)
+        except Exception as error:
+            print(f"codex-quota: refresh failed: {error}", file=sys.stderr)
+            self._quota_dirty = True
+            if getattr(self, "_network_available", True):
+                self._schedule_live_due(LIVE_QUERY_INTERVAL_SECONDS)
+            else:
+                self._cancel_live_due()
+        finally:
+            self._refresh_running = False
+            queued = self._refresh_queued
+            queued_force = self._queued_force
+            self._refresh_queued = False
+            self._queued_force = False
+            if queued and not self._stopping:
+                if outcome is None or not outcome.live_attempted:
+                    self.refresh_now(force_live=queued_force)
+                elif queued_force and not outcome.live_succeeded:
+                    self.refresh_now(force_live=True)
+        return GLib.SOURCE_REMOVE
+
+    def _start_refresh_animation(
+        self,
+        *,
+        base_label: str | None = None,
+        replace_known: bool = False,
+    ) -> None:
+        if self._stopping:
+            return
+        if getattr(self, "_headless", False):
+            if base_label is not None:
+                self._item.set_label(base_label)
+            return
+
+        # Startup uses the spinner only while the percentage is unknown.
+        # A failed live query or an explicit network-loss signal sets
+        # replace_known so a stale percentage cannot look current.
+        if self._spinner_source and base_label is None:
+            return
+
+        candidate_label = (
+            base_label if base_label is not None else self._item.get_label()
+        )
+        if candidate_label != "Codex --%" and not replace_known:
+            self._stop_refresh_animation(restore_label=False)
+            self._item.set_label(candidate_label)
+            return
+
+        self._spinner_base_label = candidate_label
+        if self._spinner_source:
+            self._item.set_label(
+                format_refresh_label(
+                    candidate_label,
+                    SPINNER_FRAMES[self._spinner_index],
+                )
+            )
+            return
+
+        self._spinner_index = 0
+        self._item.set_label(
+            format_refresh_label(
+                self._spinner_base_label,
+                SPINNER_FRAMES[self._spinner_index],
+            )
+        )
+        self._spinner_source = GLib.timeout_add(
+            SPINNER_INTERVAL_MILLISECONDS,
+            self._advance_refresh_animation,
+            priority=GLib.PRIORITY_DEFAULT,
+        )
+
+    def _update_refresh_animation_base(self, base_label: str) -> None:
+        self._start_refresh_animation(
+            base_label=base_label,
+            replace_known=True,
+        )
+
+    def _advance_refresh_animation(self) -> bool:
+        if self._stopping:
+            self._spinner_source = 0
+            return GLib.SOURCE_REMOVE
+        self._spinner_index = (self._spinner_index + 1) % len(
+            SPINNER_FRAMES
+        )
+        base_label = self._spinner_base_label or "Codex --%"
+        self._item.set_label(
+            format_refresh_label(
+                base_label,
+                SPINNER_FRAMES[self._spinner_index],
+            )
+        )
+        return GLib.SOURCE_CONTINUE
+
+    def _stop_refresh_animation(self, *, restore_label: bool = True) -> None:
+        source = getattr(self, "_spinner_source", 0)
+        self._spinner_source = 0
+        if source:
+            GLib.source_remove(source)
+        base_label = getattr(self, "_spinner_base_label", None)
+        self._spinner_base_label = None
+        self._spinner_index = 0
+        if restore_label and base_label is not None:
+            self._item.set_label(base_label)
+
+    def _record_live_outcome(self, outcome: SnapshotLoadResult) -> None:
+        if outcome.live_succeeded:
+            self._consecutive_live_failures = 0
+            self._failure_notification_sent = False
+            return
+        if not outcome.live_attempted:
+            return
+        self._consecutive_live_failures = (
+            getattr(self, "_consecutive_live_failures", 0) + 1
+        )
+        if (
+            self._consecutive_live_failures
+            < FAILURE_NOTIFICATION_THRESHOLD
+            or getattr(self, "_failure_notification_sent", False)
+        ):
+            return
+        self._failure_notification_sent = True
+        self._send_refresh_failure_notification(
+            self._consecutive_live_failures
+        )
+
+    def _send_refresh_failure_notification(
+        self,
+        failure_count: int,
+    ) -> None:
+        if self._stopping:
+            return
+        try:
+            notifications = self._bus.get_object(
+                NOTIFICATIONS_NAME,
+                NOTIFICATIONS_PATH,
+                introspect=False,
+                follow_name_owner_changes=True,
+            )
+            notifications.Notify(
+                dbus.String("Codex Dashboard"),
+                dbus.UInt32(0),
+                dbus.String("codex-dashboard-symbolic"),
+                dbus.String("Codex Dashboard update failed"),
+                dbus.String(
+                    f"Unable to update the quota after {failure_count} attempts. "
+                    "Retrying in the background."
+                ),
+                dbus.Array([], signature="s"),
+                dbus.Dictionary(
+                    {
+                        "urgency": dbus.Byte(1),
+                        "transient": dbus.Boolean(False),
+                    },
+                    signature="sv",
+                ),
+                dbus.Int32(-1),
+                dbus_interface=NOTIFICATIONS_INTERFACE,
+                timeout=2.0,
+                reply_handler=lambda _notification_id: None,
+                error_handler=self._notification_failed,
+            )
+        except dbus.DBusException as error:
+            self._notification_failed(error)
+
+    @staticmethod
+    def _notification_failed(error: Exception) -> None:
+        print(
+            f"codex-quota: cannot show failure notification: {error}",
+            file=sys.stderr,
+        )
+
+    def _watcher_owner_changed(
+        self,
+        _name: str,
+        _old_owner: str,
+        new_owner: str,
+    ) -> None:
+        if self._stopping:
+            return
+        self._registration_attempt += 1
+        self._registration_pending = False
+        if new_owner:
+            self._cancel_registration_retry()
+            self._registration_retry_seconds = 1
+            GLib.idle_add(
+                self._register_indicator, priority=GLib.PRIORITY_DEFAULT
+            )
+        else:
+            self._registration_retry_seconds = 1
+            self._schedule_registration_retry()
+
+    def _item_unregistered(self, service: str) -> None:
+        if str(service) != BUS_NAME or self._stopping:
+            return
+        self._registration_retry_seconds = 1
+        self._schedule_registration_retry()
+
+    def _cancel_registration_retry(self) -> None:
+        if self._watcher_retry_source:
+            GLib.source_remove(self._watcher_retry_source)
+            self._watcher_retry_source = 0
+
+    def _schedule_registration_retry(self) -> None:
+        if (
+            self._stopping
+            or getattr(self, "_headless", False)
+            or self._watcher_retry_source
+        ):
+            return
+        delay = self._registration_retry_seconds
+        self._registration_retry_seconds = min(
+            delay * 2,
+            REGISTRATION_RETRY_MAX_SECONDS,
+        )
+        self._watcher_retry_source = GLib.timeout_add_seconds(
+            delay,
+            self._retry_register_indicator,
+            priority=GLib.PRIORITY_DEFAULT,
+        )
+
+    def _register_indicator(self) -> bool:
+        if (
+            self._stopping
+            or getattr(self, "_headless", False)
+            or self._registration_pending
+        ):
+            return GLib.SOURCE_REMOVE
+        self._registration_attempt += 1
+        attempt = self._registration_attempt
+        self._registration_pending = True
+        try:
+            watcher = self._bus.get_object(
+                WATCHER_NAME,
+                WATCHER_PATH,
+                introspect=False,
+                follow_name_owner_changes=True,
+            )
+            watcher.RegisterStatusNotifierItem(
+                BUS_NAME,
+                dbus_interface=WATCHER_INTERFACE,
+                timeout=2.0,
+                reply_handler=lambda *_args: self._registration_succeeded(
+                    attempt
+                ),
+                error_handler=lambda error: self._registration_failed(
+                    attempt,
+                    error,
+                ),
+            )
+        except dbus.DBusException as error:
+            self._registration_failed(attempt, error)
+        return GLib.SOURCE_REMOVE
+
+    @staticmethod
+    def _registration_failure_key(error: Exception) -> str:
+        try:
+            error_name = error.get_dbus_name()
+        except (AttributeError, dbus.DBusException):
+            error_name = None
+        return str(error_name or type(error).__name__)
+
+    def _registration_succeeded(self, attempt: int) -> None:
+        if self._stopping or attempt != self._registration_attempt:
+            return
+        self._registration_pending = False
+        self._registration_retry_seconds = 1
+        self._cancel_registration_retry()
+        if self._registration_error_key is not None:
+            print("codex-quota: AppIndicator host ready", file=sys.stderr)
+        self._registration_error_key = None
+        self._last_registration_error_log_at = None
+
+    def _registration_failed(
+        self,
+        attempt: int,
+        error: Exception,
+    ) -> None:
+        if self._stopping or attempt != self._registration_attempt:
+            return
+        self._registration_pending = False
+        now = self._clock()
+        error_key = self._registration_failure_key(error)
+        error_changed = error_key != self._registration_error_key
+        heartbeat_due = (
+            self._last_registration_error_log_at is None
+            or now - self._last_registration_error_log_at
+            >= REGISTRATION_ERROR_HEARTBEAT_SECONDS
+        )
+        if error_changed or heartbeat_due:
+            print(
+                f"codex-quota: AppIndicator host not ready: {error}",
+                file=sys.stderr,
+            )
+            self._last_registration_error_log_at = now
+        self._registration_error_key = error_key
+        self._schedule_registration_retry()
+
+    def _retry_register_indicator(self) -> bool:
+        self._watcher_retry_source = 0
+        self._register_indicator()
+        return GLib.SOURCE_REMOVE
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Publish quota state for Codex Dashboard",
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="publish state without registering an AppIndicator",
+    )
+    arguments = parser.parse_args()
+    try:
+        application = CodexQuotaApplication(headless=arguments.headless)
+    except BlockingIOError:
+        print("codex-quota: another instance is already running", file=sys.stderr)
+        return 0
+    application.run()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

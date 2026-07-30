@@ -1,0 +1,595 @@
+#!/usr/bin/python3
+"""Build truthful local data for the Codex GNOME dashboard.
+
+Quota values come from codex-quota's live account snapshot. Token totals come
+from Codex's official account usage endpoint. Recent task overviews come only
+from the current Codex thread index.
+"""
+
+from __future__ import annotations
+
+import calendar
+from collections import defaultdict
+import datetime as dt
+from enum import StrEnum
+import json
+import math
+import os
+from pathlib import Path
+import re
+import sqlite3
+import sys
+import time
+from typing import Any
+import unicodedata
+
+
+DASHBOARD_LIB_DIR = Path(
+    os.environ.get(
+        "CODEX_DASHBOARD_LIB_DIR",
+        Path.home() / ".local/lib/codex-dashboard",
+    )
+)
+if str(DASHBOARD_LIB_DIR) not in sys.path:
+    sys.path.insert(0, str(DASHBOARD_LIB_DIR))
+
+from codex_app_server import query_codex_app_server, resolve_codex_bin
+
+
+HISTORY_DAYS = 91
+CALENDAR_MONTH_COUNT = 3
+RECENT_TASK_LIMIT = 5
+TASK_OVERVIEW_COLUMNS = 48
+OFFICIAL_USAGE_TIMEOUT_SECONDS = 8.0
+MAX_PROTOCOL_LINE_BYTES = 4 * 1024 * 1024
+QUOTA_STALE_AFTER_SECONDS = 300.0
+IMAGE_PLACEHOLDER = re.compile(r"\[Image(?:\s+#?\d+)?\]", re.IGNORECASE)
+TASK_COMMAND_PREFIX = re.compile(
+    r"^(?:(?:[$/][A-Za-z][A-Za-z0-9_-]*):?(?:\s+|$))+",
+)
+AGENTS_HEADER = re.compile(
+    r"^\s*#{1,6}\s*AGENTS\.md instructions[^\r\n]*(?:\r?\n|$)",
+    re.IGNORECASE,
+)
+INJECTED_MARKDOWN_ONLY = re.compile(
+    r"^\s*#{1,6}\s*(?:Skills|Handoff)(?:\s|:|$)",
+    re.IGNORECASE,
+)
+INJECTED_XML_BLOCK = re.compile(
+    r"^\s*(?:(?:>\s*)+)?"
+    r"<(?P<tag>INSTRUCTIONS|environment_context|handoff|"
+    r"skills_instructions|skill)\b[^>]*>"
+    r".*?</(?P=tag)\s*>\s*",
+    re.IGNORECASE | re.DOTALL,
+)
+INJECTED_XML_OPEN = re.compile(
+    r"^\s*(?:(?:>\s*)+)?"
+    r"<(?:INSTRUCTIONS|environment_context|handoff|"
+    r"skills_instructions|skill)\b",
+    re.IGNORECASE,
+)
+LEADING_MARKDOWN = re.compile(
+    r"^\s*(?:(?:#{1,6}|[-*+]|>+)\s+)+",
+)
+LEADING_GREETING = re.compile(
+    r"^(?:你好|您好|hello|hi)[,，:：。.!！\s]+",
+    re.IGNORECASE,
+)
+SENTENCE_END = re.compile(r"(?:[。！？；]+|[.!?]+(?=\s|$))")
+NATURAL_BREAKS = frozenset("，、,;；:：")
+INJECTED_SUMMARY_PREFIXES = (
+    "another language model started to solve this problem",
+    "produced a summary of its thinking process",
+)
+CODEX_BIN = resolve_codex_bin()
+
+
+class Availability(StrEnum):
+    READY = "ready"
+    STALE = "stale"
+    UNAVAILABLE = "unavailable"
+
+
+def normalize_availability(value: Any) -> Availability:
+    try:
+        return Availability(value)
+    except (TypeError, ValueError):
+        return Availability.UNAVAILABLE
+
+
+def quota_availability(
+    quota: dict[str, Any],
+    explicit: Any = None,
+    *,
+    now_seconds: float | None = None,
+) -> Availability:
+    explicit_state: Availability | None = None
+    if explicit is not None:
+        explicit_state = normalize_availability(explicit)
+        if explicit_state is Availability.UNAVAILABLE:
+            return Availability.UNAVAILABLE
+
+    limits = quota.get("limits")
+    if not isinstance(limits, list) or not limits:
+        return Availability.UNAVAILABLE
+    if explicit_state is Availability.STALE or quota.get("_stale") is True:
+        return Availability.STALE
+
+    updated_at = quota.get("updated_at_seconds")
+    if (
+        not isinstance(updated_at, bool)
+        and isinstance(updated_at, (int, float))
+        and math.isfinite(float(updated_at))
+    ):
+        now = time.time() if now_seconds is None else float(now_seconds)
+        if math.isfinite(now) and now - float(updated_at) >= (
+            QUOTA_STALE_AFTER_SECONDS
+        ):
+            return Availability.STALE
+    return Availability.READY
+
+
+def availability_payload(
+    *,
+    quota: Any,
+    usage: Any,
+    tasks: Any,
+) -> dict[str, str]:
+    return {
+        "quota": normalize_availability(quota).value,
+        "usage": normalize_availability(usage).value,
+        "tasks": normalize_availability(tasks).value,
+    }
+
+
+
+def _codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+
+
+def _runtime_dir() -> Path:
+    return Path(
+        os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    )
+
+
+def _quota_state() -> dict[str, Any]:
+    path = _runtime_dir() / "codex-quota.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {"limits": [], "_source": "missing", "_stale": True}
+    return payload if isinstance(payload, dict) else {
+        "limits": [],
+        "_source": "invalid",
+        "_stale": True,
+    }
+
+
+def _latest_state_db(codex_home: Path) -> Path | None:
+    candidates: list[tuple[int, Path]] = []
+    for path in codex_home.glob("state_*.sqlite"):
+        try:
+            candidates.append((path.stat().st_mtime_ns, path))
+        except OSError:
+            continue
+    return max(candidates, default=(0, None))[1]
+
+
+def _connect_read_only(path: Path) -> sqlite3.Connection:
+    return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=0.5)
+
+
+def _shift_month(value: dt.date, offset: int) -> dt.date:
+    month_index = value.year * 12 + value.month - 1 + offset
+    year, month = divmod(month_index, 12)
+    return dt.date(year, month + 1, 1)
+
+
+def _calendar_months(
+    totals: dict[str, int],
+    today: dt.date,
+) -> list[dict[str, Any]]:
+    months: list[dict[str, Any]] = []
+    first_month = _shift_month(today, -(CALENDAR_MONTH_COUNT - 1))
+    for offset in range(CALENDAR_MONTH_COUNT):
+        month_start = _shift_month(first_month, offset)
+        days_in_month = calendar.monthrange(
+            month_start.year,
+            month_start.month,
+        )[1]
+        last_day = today.day if (
+            month_start.year == today.year
+            and month_start.month == today.month
+        ) else days_in_month
+        months.append({
+            "key": month_start.strftime("%Y-%m"),
+            "label": calendar.month_name[month_start.month],
+            "year": month_start.year,
+            "month": month_start.month,
+            "days": [
+                {
+                    "day": day,
+                    "tokens": totals.get(
+                        dt.date(
+                            month_start.year,
+                            month_start.month,
+                            day,
+                        ).isoformat(),
+                        0,
+                    ),
+                }
+                for day in range(1, last_day + 1)
+            ],
+        })
+    return months
+
+
+def _token_usage() -> dict[str, Any]:
+    return OfficialTokenActivity().build(_read_official_usage())
+
+
+def _read_official_usage(
+    timeout_seconds: float = OFFICIAL_USAGE_TIMEOUT_SECONDS,
+    *,
+    query=query_codex_app_server,
+) -> dict[str, Any]:
+    return query(
+        CODEX_BIN,
+        "account/usage/read",
+        None,
+        timeout_seconds=timeout_seconds,
+        max_line_bytes=MAX_PROTOCOL_LINE_BYTES,
+        cancel_event=None,
+    )
+
+
+class OfficialTokenActivity:
+    """Render account token activity returned by the Codex service."""
+
+    def __init__(self, now: dt.datetime | None = None) -> None:
+        self._now = now
+
+    def build(self, payload: dict[str, Any]) -> dict[str, Any]:
+        summary = payload.get("summary")
+        buckets = payload.get("dailyUsageBuckets")
+        if not isinstance(summary, dict) or not isinstance(buckets, list):
+            raise ValueError("Official token activity is unavailable")
+
+        now = self._now or dt.datetime.now().astimezone()
+        if now.tzinfo is None:
+            now = now.astimezone()
+        today = now.date()
+        totals: defaultdict[str, int] = defaultdict(int)
+        for bucket in buckets:
+            if not isinstance(bucket, dict):
+                continue
+            day = bucket.get("startDate")
+            tokens = bucket.get("tokens")
+            if (
+                not isinstance(day, str)
+                or isinstance(tokens, bool)
+                or not isinstance(tokens, (int, float))
+                or not math.isfinite(float(tokens))
+                or tokens < 0
+            ):
+                continue
+            try:
+                parsed_day = dt.date.fromisoformat(day)
+            except ValueError:
+                continue
+            if parsed_day <= today:
+                totals[parsed_day.isoformat()] += int(tokens)
+
+        daily = []
+        for offset in range(HISTORY_DAYS - 1, -1, -1):
+            day = today - dt.timedelta(days=offset)
+            daily.append({
+                "date": day.isoformat(),
+                "tokens": totals.get(day.isoformat(), 0),
+            })
+        latest_bucket_date = max(totals, default=None)
+        current_day_available = today.isoformat() in totals
+
+        def summary_tokens(key: str) -> int | None:
+            value = summary.get(key)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or value < 0
+            ):
+                return None
+            return int(value)
+
+        return {
+            "today": daily[-1]["tokens"],
+            "seven_days": sum(item["tokens"] for item in daily[-7:]),
+            "ninety_days": sum(item["tokens"] for item in daily[-90:]),
+            "lifetime": summary_tokens("lifetimeTokens"),
+            "peak_daily": summary_tokens("peakDailyTokens"),
+            "latest_bucket_date": latest_bucket_date,
+            "current_day_available": current_day_available,
+            "days": daily,
+            "calendar_months": _calendar_months(totals, today),
+            "source": "official_account_usage",
+            "includes_cached_input": False,
+        }
+
+
+def _display_width(value: str) -> int:
+    return sum(
+        0
+        if unicodedata.combining(character)
+        else 2
+        if unicodedata.east_asian_width(character) in {"W", "F"}
+        else 1
+        for character in value
+    )
+
+
+def _bounded_text(value: Any, columns: int = TASK_OVERVIEW_COLUMNS) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(value.split())
+    if _display_width(text) <= columns:
+        return text
+
+    prefix: list[str] = []
+    width = 0
+    for character in text:
+        character_width = _display_width(character)
+        if width + character_width > columns - 1:
+            break
+        prefix.append(character)
+        width += character_width
+
+    candidate = "".join(prefix).rstrip()
+    minimum_break_width = columns * 3 // 5
+    break_at = max(
+        (
+            index + 1
+            for index, character in enumerate(candidate)
+            if (
+                character in NATURAL_BREAKS or character.isspace()
+            )
+            and _display_width(candidate[:index + 1]) >= minimum_break_width
+        ),
+        default=0,
+    )
+    if break_at:
+        candidate = candidate[:break_at].rstrip()
+    return candidate + "…"
+
+
+def _strip_task_command_prefix(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return TASK_COMMAND_PREFIX.sub("", value.lstrip())
+
+
+def _strip_injected_prefixes(value: str) -> str:
+    text = value.lstrip()
+    if INJECTED_MARKDOWN_ONLY.match(text):
+        return ""
+
+    agents_header = AGENTS_HEADER.match(text)
+    if agents_header:
+        text = text[agents_header.end():]
+
+    removed_block = False
+    while match := INJECTED_XML_BLOCK.match(text):
+        removed_block = True
+        text = text[match.end():].lstrip()
+
+    if (agents_header and not removed_block) or INJECTED_XML_OPEN.match(text):
+        return ""
+    if text.casefold().startswith(INJECTED_SUMMARY_PREFIXES):
+        return ""
+    return text
+
+
+def _task_overview(value: Any) -> str:
+    """Extract one bounded, source-language sentence from thread metadata."""
+
+    if not isinstance(value, str):
+        return ""
+    text = unicodedata.normalize("NFC", value)
+    text = _strip_task_command_prefix(text)
+    text = _strip_injected_prefixes(text)
+    text = IMAGE_PLACEHOLDER.sub(" ", text)
+    text = LEADING_MARKDOWN.sub("", text)
+    text = " ".join(text.split())
+    text = LEADING_GREETING.sub("", text).strip()
+    if not text:
+        return ""
+
+    sentence_end = SENTENCE_END.search(text)
+    if sentence_end:
+        text = text[:sentence_end.end()].rstrip()
+    return _bounded_text(text)
+
+
+def _iso_timestamp(value: Any) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return ""
+    numeric = float(value)
+    if not math.isfinite(numeric) or numeric <= 0:
+        return ""
+    if numeric >= 10_000_000_000:
+        numeric /= 1_000
+    try:
+        moment = dt.datetime.fromtimestamp(numeric, tz=dt.timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return ""
+    return moment.isoformat().replace("+00:00", "Z")
+
+
+class RecentTaskReader:
+    """Read one bounded overview per recent root thread from the state index."""
+
+    def __init__(self, codex_home: Path) -> None:
+        self._codex_home = codex_home
+
+    def read(self) -> list[dict[str, Any]]:
+        state_db = _latest_state_db(self._codex_home)
+        if state_db is None or not state_db.is_file():
+            raise FileNotFoundError("Codex thread index is unavailable")
+
+        with _connect_read_only(state_db) as connection:
+            columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(threads)")
+                if len(row) > 1
+            }
+            if "id" not in columns:
+                raise sqlite3.DatabaseError("Codex thread index is incomplete")
+
+            text_columns = [
+                column
+                for column in ("name", "first_user_message", "title")
+                if column in columns
+            ]
+            if not text_columns:
+                raise sqlite3.DatabaseError("Codex thread text is unavailable")
+
+            if "recency_at_ms" in columns:
+                time_column = "recency_at_ms"
+            elif "recency_at" in columns:
+                time_column = "recency_at"
+            elif "updated_at_ms" in columns:
+                time_column = "updated_at_ms"
+            elif "updated_at" in columns:
+                time_column = "updated_at"
+            else:
+                raise sqlite3.DatabaseError("Codex thread recency is unavailable")
+
+            conditions = [
+                "("
+                + " OR ".join(
+                    f"NULLIF(TRIM({column}), '') IS NOT NULL"
+                    for column in text_columns
+                )
+                + ")"
+            ]
+            if "archived" in columns:
+                conditions.append("archived = 0")
+            if "thread_source" in columns:
+                conditions.append(
+                    "(thread_source IS NULL "
+                    "OR TRIM(thread_source) = '' "
+                    "OR thread_source = 'user')"
+                )
+            if "agent_path" in columns:
+                conditions.append(
+                    "(agent_path IS NULL OR TRIM(agent_path) = '')"
+                )
+            name_expression = "name" if "name" in columns else "NULL"
+            first_expression = (
+                "first_user_message"
+                if "first_user_message" in columns
+                else "NULL"
+            )
+            title_expression = "title" if "title" in columns else "NULL"
+            rows = connection.execute(
+                f"""
+                SELECT id, {name_expression}, {first_expression},
+                       {title_expression}, {time_column}
+                FROM threads
+                WHERE {" AND ".join(conditions)}
+                ORDER BY {time_column} DESC, id DESC
+                LIMIT 30
+                """
+            ).fetchall()
+
+        tasks: list[dict[str, Any]] = []
+        for _thread_id, name, first_message, title_value, updated_at in rows:
+            title = next(
+                (
+                    overview
+                    for source in (name, first_message, title_value)
+                    if (overview := _task_overview(source))
+                ),
+                "",
+            )
+            if not title:
+                continue
+            tasks.append({
+                "title": title,
+                "status": "recent",
+                "updated_at": _iso_timestamp(updated_at),
+            })
+            if len(tasks) >= RECENT_TASK_LIMIT:
+                break
+        return tasks
+
+
+def _recent_tasks() -> tuple[list[dict[str, Any]], dict[str, int]]:
+    tasks = RecentTaskReader(_codex_home()).read()
+    return tasks, {"recent": len(tasks)} if tasks else {}
+
+
+def _safe_call(function, fallback, warnings: list[str]):
+    try:
+        return function()
+    except Exception as error:  # Keep the panel useful if one local source fails.
+        warnings.append(f"{function.__name__}: {type(error).__name__}")
+        return fallback
+
+
+def main() -> int:
+    warnings: list[str] = []
+    quota = _safe_call(_quota_state, None, warnings)
+    quota = quota if isinstance(quota, dict) else {
+        "limits": [],
+        "_source": "error",
+        "_stale": True,
+    }
+    quota_state = quota_availability(quota)
+
+    unavailable_usage = {
+        "today": 0,
+        "seven_days": 0,
+        "ninety_days": 0,
+        "days": [],
+        "calendar_months": [],
+        "source": "unavailable",
+        "latest_bucket_date": None,
+        "current_day_available": False,
+        "includes_cached_input": False,
+    }
+    usage = _safe_call(_token_usage, unavailable_usage, warnings)
+    usage_state = (
+        Availability.UNAVAILABLE
+        if usage is unavailable_usage or usage.get("source") == "unavailable"
+        else Availability.READY
+    )
+
+    unavailable_tasks = ([], {})
+    task_result = _safe_call(_recent_tasks, unavailable_tasks, warnings)
+    tasks, activity_counts = task_result
+    tasks_state = (
+        Availability.UNAVAILABLE
+        if task_result is unavailable_tasks
+        else Availability.READY
+    )
+    payload = {
+        "generated_at": dt.datetime.now().astimezone().isoformat(),
+        "quota": quota,
+        "usage": usage,
+        "tasks": tasks,
+        "activity_counts": activity_counts,
+        "availability": availability_payload(
+            quota=quota_state,
+            usage=usage_state,
+            tasks=tasks_state,
+        ),
+        "warnings": warnings,
+    }
+    json.dump(payload, sys.stdout, ensure_ascii=False, separators=(",", ":"))
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

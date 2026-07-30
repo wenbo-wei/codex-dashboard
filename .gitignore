@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+build/
+dist/
+*.zip
+.env
+.env.*
+auth.json
+state_*.sqlite
+state_*.sqlite-*
+*.jsonl
+codex-quota.json
+screenshots/private/
