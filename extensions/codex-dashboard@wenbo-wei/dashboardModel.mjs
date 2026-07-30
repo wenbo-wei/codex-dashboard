@@ -1,4 +1,4 @@
-// Pure presentation rules shared by the GNOME view and behavior tests.
+// Pure presentation rules shared by the GNOME view.
 
 export const Availability = Object.freeze({
     READY: 'ready',

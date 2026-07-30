@@ -1,4 +1,4 @@
-// Codex Dashboard implementation for GNOME Shell 50.
+// Codex Dashboard GNOME Shell 50 implementation.
 import Cairo from 'cairo';
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';

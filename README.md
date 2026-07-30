@@ -1,109 +1,71 @@
 # Codex Dashboard
 
-Codex Dashboard is a GNOME Shell top-panel extension for a compact view of:
+A small, local-first GNOME Shell 50 extension that shows:
 
-- the current Codex quota window;
+- the current Codex quota;
 - official 7-day and 90-day token activity;
 - five recent terminal tasks, one concise sentence per root Codex session.
 
-Task rows keep the user's original language and concrete wording. The helper
-does not classify tasks into fixed categories and does not call a model to
-generate titles.
+Task titles keep the user's language and wording. There is no fixed task
+catalogue, translation, or model-generated summary.
 
-> Codex Dashboard is an unofficial community project. It is not affiliated
-> with or endorsed by OpenAI. Codex is a trademark of OpenAI.
-
-## Requirements
-
-- GNOME Shell 50
-- Python 3.11 or newer
-- Codex CLI available on `PATH`
-- PyGObject and dbus-python
-- `systemd --user`
-
-On Ubuntu, the runtime dependencies are:
-
-```sh
-sudo apt install python3-dbus python3-gi
-```
+> This is an unofficial community project and is not affiliated with OpenAI.
 
 ## Install
 
+Requirements: GNOME Shell 50, Python 3.11+, Codex CLI, `systemd --user`,
+PyGObject, and dbus-python.
+
 ```sh
+sudo apt install python3-dbus python3-gi
 git clone https://github.com/wenbo-wei/codex-dashboard.git
 cd codex-dashboard
-make check
 ./scripts/install.sh
 ```
 
-The installer copies only project-owned files under `~/.local` and installs
-the user service at `~/.config/systemd/user/codex-quota.service`. It does not
-restart GNOME Shell. On an upgrade, sign out and back in when convenient so
-GNOME Shell loads the new JavaScript.
+The extension UUID is `codex-dashboard@wenbo-wei`. The installer automatically
+migrates the old local UUID if it is present. If the current Shell session has
+not discovered the new UUID yet, the old extension is preserved and the
+installer asks you to sign in again before rerunning it.
 
-The extension keeps the UUID `codex-quota-centre@local` for compatibility with
-existing local installations, while its visible name is **Codex Dashboard**.
+## How it works
 
-## How task overviews work
+- `extension.js` renders the GNOME top-panel button and menu.
+- `codex-dashboard-data` reads the local Codex thread index in SQLite
+  read-only mode and turns each recent root session into one task sentence.
+- `codex-quota` publishes live quota state for the extension.
+- Official token and quota data come from the locally installed Codex CLI
+  app-server.
 
-Codex keeps a local thread index under `CODEX_HOME` (normally `~/.codex`).
-Codex Dashboard opens the newest index in SQLite read-only mode, excludes
-archived sessions and subagents, and treats each remaining root session as one
-terminal task.
+Subagents, archived sessions, injected instructions, skill prefixes, and image
+placeholders are excluded from task rows. No session text is uploaded by this
+project and no model request is made to generate task titles.
 
-For each row it prefers a user-assigned Codex session name. Otherwise it
-extracts one display sentence from that session's stable initial task title:
-skill prefixes and image placeholders are removed, whitespace is normalized,
-and long text is clipped at a natural sentence or clause boundary. There is no
-task-domain dictionary, translation, or model-generated replacement.
+## Repository layout
 
-## Data and privacy
+- `extensions/codex-dashboard@wenbo-wei/` — GNOME Shell interface
+- `codex-quota/` — dashboard data and quota publisher
+- `codex-panel/` — shared Python modules
+- `scripts/` and `systemd/` — installation and background service
 
-- The thread index is opened read-only. Codex Dashboard never changes or logs
-  session titles.
-- Task source text stays on the machine and is not sent over the network.
-- Task summaries are visible in the panel menu; treat screenshots and screen
-  sharing as potentially sensitive.
-- Token activity comes from Codex's official `account/usage/read` app-server
-  method.
-- Quota state comes from Codex's `account/rateLimits/read` method and is
-  published locally to the user's runtime directory.
-- Missing official daily data is shown as pending rather than as a real zero.
-
-Environment overrides supported by the Python components include `CODEX_HOME`,
-`CODEX_BIN`, `XDG_RUNTIME_DIR`, and `CODEX_DASHBOARD_LIB_DIR`.
-
-Codex's app-server protocol and local thread-index schema may evolve with
-future Codex CLI releases. Compatibility fixes may therefore be needed after
-major CLI updates.
-
-## Development
-
-Run the complete test and syntax suite:
+## Update or remove
 
 ```sh
-make check
+git pull
+./scripts/install.sh
 ```
 
-The main components are:
-
-- `extensions/codex-quota-centre@local/` — GNOME Shell UI
-- `codex-quota/codex-dashboard-data` — read-only dashboard data helper
-- `codex-quota/codex-quota` — event-driven quota state publisher
-- `codex-panel/` — shared Codex app-server and quota modules
-- `scripts/` — user-scoped install and uninstall scripts
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for code standards and
-[SECURITY.md](SECURITY.md) for private vulnerability reporting.
-
-## Uninstall
+GNOME Shell may keep JavaScript cached during later upgrades. If necessary,
+sign out and back in when convenient.
 
 ```sh
 ./scripts/uninstall.sh
 ```
 
-The uninstaller removes only the files installed by this project. It does not
-delete Codex sessions, account data, configuration, or the Codex CLI.
+Uninstalling does not delete Codex sessions, account data, configuration, or
+the Codex CLI.
+
+For a basic source syntax check, run `make check`.
 
 ## License
 

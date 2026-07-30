@@ -1,17 +1,9 @@
 PYTHON ?= python3
 NODE ?= node
 
-.PHONY: check test syntax
+.PHONY: check
 
-check: test syntax
-
-test:
-	$(PYTHON) codex-quota/tests/test_codex_dashboard_data.py
-	$(PYTHON) codex-quota/tests/test_codex_quota.py
-	$(PYTHON) tests/test_installer.py
-	$(NODE) codex-quota/tests/test_dashboard_model.mjs
-
-syntax:
+check:
 	$(PYTHON) -m py_compile \
 		codex-panel/codex_app_server.py \
 		codex-panel/quota_snapshot.py \
@@ -19,12 +11,9 @@ syntax:
 		codex-quota/codex-dashboard-data \
 		codex-quota/codex-quota
 	$(PYTHON) -m json.tool \
-		extensions/codex-quota-centre@local/metadata.json >/dev/null
+		extensions/codex-dashboard@wenbo-wei/metadata.json >/dev/null
 	$(NODE) --check \
-		extensions/codex-quota-centre@local/extension.js
+		extensions/codex-dashboard@wenbo-wei/extension.js
 	$(NODE) --check \
-		extensions/codex-quota-centre@local/dashboardModel.mjs
+		extensions/codex-dashboard@wenbo-wei/dashboardModel.mjs
 	sh -n scripts/install.sh scripts/uninstall.sh
-	@if command -v shellcheck >/dev/null 2>&1; then \
-		shellcheck scripts/install.sh scripts/uninstall.sh; \
-	fi

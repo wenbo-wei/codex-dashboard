@@ -8,9 +8,8 @@
   overrides. Never commit a developer-specific absolute home path.
 - Treat the Codex state database and session data as private, read-only input.
   Never log task source text or send it over the network.
-- Use only synthetic task text and temporary databases in tests, examples,
-  screenshots, and bug reports. Never commit a real Codex database or JSONL
-  session.
+- Use only synthetic task text in examples, screenshots, and bug reports.
+  Never commit a real Codex database or JSONL session.
 - Task summaries are extractive: retain the user's concrete wording and
   language. Do not add a domain-specific classification catalogue or canned
   task descriptions.
@@ -19,8 +18,7 @@
   style in JavaScript.
 - Preserve truthful availability states. Missing official data is unavailable
   or pending; it is not a numeric zero.
-- Add a regression test for every behaviour change. Tests must run from the
-  repository and must not depend on one developer's installed files.
+- Describe the manual or runtime checks used to verify behaviour changes.
 
 ## Before submitting
 

@@ -9,6 +9,4 @@ When a commit references `#123`, retrieve it with:
 gh issue view 123 --repo wenbo-wei/codex-dashboard
 ```
 
-For the initial release, the originating specification is
-`docs/requirements.md`.
-
+The project specification is `docs/requirements.md`.

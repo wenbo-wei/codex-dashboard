@@ -3,7 +3,7 @@
 
 The normal desktop service runs headlessly and publishes a small state file
 for the GNOME extension. A legacy StatusNotifierItem mode remains available
-for compatibility and tests.
+for compatibility.
 """
 
 from __future__ import annotations

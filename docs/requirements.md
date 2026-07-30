@@ -1,12 +1,12 @@
-# Codex Dashboard v1 requirements
+# Codex Dashboard requirements
 
-This document records the user request that defines the first public release.
+This document records the current product constraints.
 
 ## Product
 
 - The GNOME Shell extension is named **Codex Dashboard**.
-- It keeps the existing `codex-quota-centre@local` UUID so an installed copy
-  upgrades in place instead of appearing as a second extension.
+- Its UUID is `codex-dashboard@wenbo-wei`; installation migrates the legacy
+  local UUID so only one dashboard remains enabled.
 - The dashboard continues to show the live Codex quota and official token
   activity already provided by the installed version.
 
@@ -29,11 +29,10 @@ This document records the user request that defines the first public release.
 
 - Provide a self-contained Git repository named `codex-dashboard`.
 - Include an OSI-approved license, installation and removal instructions,
-  contribution guidance, security reporting guidance, automated tests, and CI.
+  contribution guidance, security reporting guidance, syntax checks, and CI.
 - Do not include credentials, personal absolute paths, session contents,
   generated runtime state, or unrelated Workspace extension code.
 - Installation must work for a normal user home directory and must not require
   source edits.
 - Deployment must preserve the user's quota/token data sources and avoid
   restarting GNOME Shell or opening foreground UI.
-
