@@ -35,15 +35,21 @@ xdg_data_home=${XDG_DATA_HOME:-"$home_dir/.local/share"}
 require_absolute_path XDG_DATA_HOME "$xdg_data_home"
 xdg_config_home=${XDG_CONFIG_HOME:-"$home_dir/.config"}
 require_absolute_path XDG_CONFIG_HOME "$xdg_config_home"
+xdg_cache_home=${XDG_CACHE_HOME:-"$home_dir/.cache"}
+require_absolute_path XDG_CACHE_HOME "$xdg_cache_home"
 xdg_runtime_dir=${XDG_RUNTIME_DIR:-"/run/user/$(id -u)"}
 require_absolute_path XDG_RUNTIME_DIR "$xdg_runtime_dir"
 dashboard_lib_dir="$home_dir/.local/lib/codex-dashboard"
+task_overview_cache_dir="$xdg_cache_home/codex-dashboard"
 extension_dir="$xdg_data_home/gnome-shell/extensions/$extension_uuid"
 legacy_extension_dir="$xdg_data_home/gnome-shell/extensions/$legacy_extension_uuid"
 icon_theme_dir="$xdg_data_home/icons/hicolor"
 settings_helper="$script_dir/queue-extension.mjs"
 
 require_owned_directory "dashboard library directory" "$dashboard_lib_dir"
+require_owned_directory \
+    "task overview cache directory" \
+    "$task_overview_cache_dir"
 require_owned_directory "extension directory" "$extension_dir"
 require_owned_directory "legacy extension directory" "$legacy_extension_dir"
 [ -f "$settings_helper" ] ||
@@ -59,17 +65,25 @@ command -v systemctl >/dev/null 2>&1 ||
     "$extension_uuid" \
     "$legacy_extension_uuid"
 systemctl --user disable --now codex-quota.service >/dev/null 2>&1 || true
+systemctl --user stop codex-task-overviews.service >/dev/null 2>&1 || true
 
 rm -f \
     "$home_dir/.local/bin/codex-dashboard-data" \
+    "$home_dir/.local/bin/codex-dashboard-task-overviews" \
     "$home_dir/.local/bin/codex-quota" \
+    "$xdg_config_home/systemd/user/codex-task-overviews.service" \
     "$xdg_config_home/systemd/user/codex-quota.service" \
     "$xdg_runtime_dir/codex-dashboard-today.json" \
     "$icon_theme_dir/scalable/apps/codex-dashboard-symbolic.svg"
 rm -f \
     "$dashboard_lib_dir/codex_app_server.py" \
+    "$dashboard_lib_dir/codex_thread_index.py" \
     "$dashboard_lib_dir/quota_snapshot.py" \
-    "$dashboard_lib_dir/quota_sni.py"
+    "$dashboard_lib_dir/quota_sni.py" \
+    "$dashboard_lib_dir/task_overviews.py"
+rm -f \
+    "$task_overview_cache_dir/task-overviews.json" \
+    "$task_overview_cache_dir/task-overviews.lock"
 rm -f \
     "$extension_dir/extension.js" \
     "$extension_dir/dashboardModel.mjs" \
@@ -85,11 +99,13 @@ rm -f \
 
 rmdir \
     "$dashboard_lib_dir" \
+    "$task_overview_cache_dir" \
     "$extension_dir" \
     "$legacy_extension_dir" \
     2>/dev/null || true
 for preserved_directory in \
     "$dashboard_lib_dir" \
+    "$task_overview_cache_dir" \
     "$extension_dir" \
     "$legacy_extension_dir"
 do

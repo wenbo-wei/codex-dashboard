@@ -1,0 +1,12 @@
+[Unit]
+Description=Generate Codex Dashboard task overviews
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h
+ExecStart=/usr/bin/python3 -I -B %h/.local/bin/codex-dashboard-task-overviews
+TimeoutStartSec=120
+Nice=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+UMask=0077

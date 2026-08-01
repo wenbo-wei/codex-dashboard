@@ -5,6 +5,7 @@ project_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 extension_uuid='codex-dashboard@wenbo-wei'
 legacy_extension_uuid='codex-quota-centre@local'
 systemd_unit_name='codex-quota.service'
+task_overview_unit_name='codex-task-overviews.service'
 
 require_absolute_path() {
     case "$2" in
@@ -23,6 +24,8 @@ xdg_data_home=${XDG_DATA_HOME:-"$home_dir/.local/share"}
 require_absolute_path XDG_DATA_HOME "$xdg_data_home"
 xdg_config_home=${XDG_CONFIG_HOME:-"$home_dir/.config"}
 require_absolute_path XDG_CONFIG_HOME "$xdg_config_home"
+xdg_cache_home=${XDG_CACHE_HOME:-"$home_dir/.cache"}
+require_absolute_path XDG_CACHE_HOME "$xdg_cache_home"
 local_bin_dir="$home_dir/.local/bin"
 dashboard_lib_dir="$home_dir/.local/lib/codex-dashboard"
 extension_dir="$xdg_data_home/gnome-shell/extensions/$extension_uuid"
@@ -32,19 +35,24 @@ icon_dir="$icon_theme_dir/scalable/apps"
 unit_dir="$xdg_config_home/systemd/user"
 dashboard_data_target="$local_bin_dir/codex-dashboard-data"
 quota_publisher_target="$local_bin_dir/codex-quota"
+task_overview_worker_target="$local_bin_dir/codex-dashboard-task-overviews"
 app_server_target="$dashboard_lib_dir/codex_app_server.py"
+codex_thread_index_target="$dashboard_lib_dir/codex_thread_index.py"
 quota_snapshot_target="$dashboard_lib_dir/quota_snapshot.py"
 quota_sni_target="$dashboard_lib_dir/quota_sni.py"
+task_overviews_target="$dashboard_lib_dir/task_overviews.py"
 extension_js_target="$extension_dir/extension.js"
 dashboard_model_target="$extension_dir/dashboardModel.mjs"
 metadata_target="$extension_dir/metadata.json"
 stylesheet_target="$extension_dir/stylesheet.css"
 icon_target="$icon_dir/codex-dashboard-symbolic.svg"
 unit_target="$unit_dir/$systemd_unit_name"
+task_overview_unit_target="$unit_dir/$task_overview_unit_name"
 icon_cache_target="$icon_theme_dir/icon-theme.cache"
 legacy_was_present=false
 legacy_was_enabled=false
 extension_queued=false
+extension_live=false
 install_succeeded=false
 owned_backup_complete=false
 owned_install_attempted=false
@@ -58,6 +66,8 @@ icon_cache_update_attempted=false
 systemd_enabled_state=
 systemd_active_state=
 gjs_bin=
+codex_bin=
+systemd_environment=
 
 require_owned_directory() {
     if [ -L "$2" ]; then
@@ -83,24 +93,24 @@ require_owned_directory "legacy extension directory" "$legacy_extension_dir"
 for owned_target in \
     "$dashboard_data_target" \
     "$quota_publisher_target" \
+    "$task_overview_worker_target" \
     "$app_server_target" \
+    "$codex_thread_index_target" \
     "$quota_snapshot_target" \
     "$quota_sni_target" \
+    "$task_overviews_target" \
     "$extension_js_target" \
     "$dashboard_model_target" \
     "$metadata_target" \
     "$stylesheet_target" \
     "$icon_target" \
     "$unit_target" \
+    "$task_overview_unit_target" \
     "$icon_cache_target"
 do
     require_file_target "owned file target" "$owned_target"
 done
 
-command -v codex >/dev/null 2>&1 || {
-    echo "error: codex is not available on PATH" >&2
-    exit 1
-}
 command -v gnome-extensions >/dev/null 2>&1 || {
     echo "error: gnome-extensions is not installed" >&2
     exit 1
@@ -145,6 +155,58 @@ fi
     echo "error: /usr/bin/python3 3.11 or newer is required" >&2
     exit 1
 }
+if ! systemd_environment=$(
+    systemctl --user show-environment
+); then
+    echo "error: could not read the systemd user environment" >&2
+    exit 1
+fi
+if ! codex_bin=$(
+    printf '%s\n' "$systemd_environment" |
+        (
+            cd -- "$home_dir"
+            /usr/bin/python3 -c '
+import os
+import shutil
+import sys
+
+environment = {}
+for raw_line in sys.stdin:
+    name, separator, value = raw_line.rstrip("\n").partition("=")
+    if separator:
+        environment[name] = value
+
+path = environment.get("PATH")
+if path is None:
+    path = os.confstr("CS_PATH") if hasattr(os, "confstr") else None
+if not path:
+    path = os.defpath
+
+configured = environment.get("CODEX_BIN", "").strip()
+resolved = shutil.which(configured, path=path) if configured else None
+if resolved is None:
+    resolved = shutil.which("codex", path=path)
+if resolved is not None:
+    print(os.path.abspath(resolved))
+'
+        )
+); then
+    echo "error: could not inspect the systemd user environment" >&2
+    exit 1
+fi
+unset systemd_environment
+if [ -z "$codex_bin" ] &&
+    [ -f "$local_bin_dir/codex" ] &&
+    [ -x "$local_bin_dir/codex" ]; then
+    codex_bin="$local_bin_dir/codex"
+fi
+if [ -z "$codex_bin" ] ||
+    [ ! -f "$codex_bin" ] ||
+    [ ! -x "$codex_bin" ]; then
+    echo "error: codex is not executable in the systemd user environment "\
+"or ~/.local/bin" >&2
+    exit 1
+fi
 /usr/bin/python3 -c \
     'import dbus; from gi.repository import Gio, GLib' >/dev/null
 
@@ -164,14 +226,23 @@ backup_owned_targets() {
         "$quota_publisher_target" \
         "$owned_backup_dir/local-bin/codex-quota"
     backup_owned_target \
+        "$task_overview_worker_target" \
+        "$owned_backup_dir/local-bin/codex-dashboard-task-overviews"
+    backup_owned_target \
         "$app_server_target" \
         "$owned_backup_dir/lib/codex_app_server.py"
+    backup_owned_target \
+        "$codex_thread_index_target" \
+        "$owned_backup_dir/lib/codex_thread_index.py"
     backup_owned_target \
         "$quota_snapshot_target" \
         "$owned_backup_dir/lib/quota_snapshot.py"
     backup_owned_target \
         "$quota_sni_target" \
         "$owned_backup_dir/lib/quota_sni.py"
+    backup_owned_target \
+        "$task_overviews_target" \
+        "$owned_backup_dir/lib/task_overviews.py"
     backup_owned_target \
         "$extension_js_target" \
         "$owned_backup_dir/extension/extension.js"
@@ -190,6 +261,9 @@ backup_owned_targets() {
     backup_owned_target \
         "$unit_target" \
         "$owned_backup_dir/systemd/codex-quota.service"
+    backup_owned_target \
+        "$task_overview_unit_target" \
+        "$owned_backup_dir/systemd/codex-task-overviews.service"
 }
 
 restore_owned_target() {
@@ -213,8 +287,16 @@ restore_owned_targets() {
         "$owned_backup_dir/local-bin/codex-quota" ||
         restore_status=1
     restore_owned_target \
+        "$task_overview_worker_target" \
+        "$owned_backup_dir/local-bin/codex-dashboard-task-overviews" ||
+        restore_status=1
+    restore_owned_target \
         "$app_server_target" \
         "$owned_backup_dir/lib/codex_app_server.py" ||
+        restore_status=1
+    restore_owned_target \
+        "$codex_thread_index_target" \
+        "$owned_backup_dir/lib/codex_thread_index.py" ||
         restore_status=1
     restore_owned_target \
         "$quota_snapshot_target" \
@@ -223,6 +305,10 @@ restore_owned_targets() {
     restore_owned_target \
         "$quota_sni_target" \
         "$owned_backup_dir/lib/quota_sni.py" ||
+        restore_status=1
+    restore_owned_target \
+        "$task_overviews_target" \
+        "$owned_backup_dir/lib/task_overviews.py" ||
         restore_status=1
     restore_owned_target \
         "$extension_js_target" \
@@ -247,6 +333,10 @@ restore_owned_targets() {
     restore_owned_target \
         "$unit_target" \
         "$owned_backup_dir/systemd/codex-quota.service" ||
+        restore_status=1
+    restore_owned_target \
+        "$task_overview_unit_target" \
+        "$owned_backup_dir/systemd/codex-task-overviews.service" ||
         restore_status=1
     return "$restore_status"
 }
@@ -486,6 +576,23 @@ extension_is_listed() {
     printf '%s\n' "$codex_dashboard_extension_list" | grep -Fxq "$2"
 }
 
+extension_is_safely_inactive() {
+    if ! extension_info=$(
+        LC_ALL=C gnome-extensions info "$1" 2>/dev/null
+    ); then
+        return 2
+    fi
+    extension_state=$(
+        printf '%s\n' "$extension_info" |
+            sed -n 's/^[[:space:]]*State:[[:space:]]*//p'
+    )
+    if [ "$extension_state" = INACTIVE ]; then
+        return 0
+    fi
+    [ -n "$extension_state" ] || return 2
+    return 1
+}
+
 snapshot_systemd_state
 transaction_dir=$(mktemp -d)
 owned_backup_dir="$transaction_dir/owned"
@@ -509,10 +616,15 @@ install -m 0755 \
 install -m 0755 \
     "$project_root/codex-quota/codex-quota" \
     "$local_bin_dir/codex-quota"
+install -m 0755 \
+    "$project_root/codex-quota/codex-dashboard-task-overviews" \
+    "$task_overview_worker_target"
 install -m 0644 \
     "$project_root/backend/codex_app_server.py" \
+    "$project_root/backend/codex_thread_index.py" \
     "$project_root/backend/quota_snapshot.py" \
     "$project_root/backend/quota_sni.py" \
+    "$project_root/backend/task_overviews.py" \
     "$dashboard_lib_dir/"
 install -m 0644 \
     "$project_root/extensions/$extension_uuid/extension.js" \
@@ -526,6 +638,9 @@ install -m 0644 \
 install -m 0644 \
     "$project_root/systemd/codex-quota.service" \
     "$unit_target"
+install -m 0644 \
+    "$project_root/systemd/codex-task-overviews.service" \
+    "$task_overview_unit_target"
 
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     icon_cache_update_attempted=true
@@ -563,17 +678,14 @@ if ! gnome-extensions info "$extension_uuid" >/dev/null 2>&1; then
     fi
     extension_queued=true
 else
-    if [ "$legacy_was_enabled" = true ]; then
-        if ! gnome-extensions disable "$legacy_extension_uuid"; then
-            abort_migration "could not disable $legacy_extension_uuid"
-        fi
-    fi
-
     if extension_is_listed --active "$extension_uuid"; then
-        :
+        extension_live=true
     elif [ "$?" -eq 2 ]; then
         abort_migration "could not read the active extension list"
     else
+        if [ "$legacy_was_present" = true ]; then
+            stage_migration
+        fi
         if extension_is_listed --enabled "$extension_uuid"; then
             if ! gnome-extensions disable "$extension_uuid"; then
                 abort_migration "could not reset $extension_uuid"
@@ -584,10 +696,31 @@ else
         if ! gnome-extensions enable "$extension_uuid"; then
             abort_migration "could not enable $extension_uuid"
         fi
+        if extension_is_listed --active "$extension_uuid"; then
+            extension_live=true
+        elif [ "$?" -eq 2 ]; then
+            abort_migration "could not read the active extension list"
+        elif extension_is_safely_inactive "$extension_uuid"; then
+            if ! "$gjs_bin" -m \
+                "$project_root/scripts/queue-extension.mjs" \
+                "$extension_uuid" \
+                "$legacy_extension_uuid"; then
+                abort_migration \
+                    "could not queue $extension_uuid for the next login"
+            fi
+            extension_queued=true
+        elif [ "$?" -eq 2 ]; then
+            abort_migration "could not determine $extension_uuid state"
+        else
+            abort_migration \
+                "$extension_uuid did not remain safely inactive"
+        fi
     fi
-
-    if ! extension_is_listed --active "$extension_uuid"; then
-        abort_migration "$extension_uuid did not become active"
+    if [ "$extension_live" = true ] &&
+        [ "$legacy_was_enabled" = true ]; then
+        if ! gnome-extensions disable "$legacy_extension_uuid"; then
+            abort_migration "could not disable $legacy_extension_uuid"
+        fi
     fi
 fi
 

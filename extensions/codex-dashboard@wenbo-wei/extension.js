@@ -38,17 +38,35 @@ const QUOTA_STATE_PATH = GLib.build_filenamev([
     GLib.get_user_runtime_dir(),
     'codex-quota.json',
 ]);
+const TASK_OVERVIEW_CACHE_PATH = GLib.build_filenamev([
+    GLib.get_user_cache_dir(),
+    'codex-dashboard',
+    'task-overviews.json',
+]);
 const CLOCK_BUTTON_STYLE = 'codex-dashboard-clock-button';
 const CODEX_BUTTON_STYLE = 'codex-dashboard-centre-button';
 const DATA_HELPER_TIMEOUT_MILLISECONDS = 12_000;
 
 
+function taskOverviewDisplayWidth(value) {
+    let width = 0;
+    for (const character of value) {
+        if (!GLib.unichar_isprint(character))
+            return Number.POSITIVE_INFINITY;
+        if (GLib.unichar_combining_class(character) !== 0)
+            continue;
+        width += GLib.unichar_iswide(character) ? 2 : 1;
+    }
+    return width;
+}
+
+
 function taskOverviewTitle(value) {
-    const title = String(value ?? '');
+    const title = String(value ?? '').normalize('NFC');
     if (
-        /^[\x20-\x7e]{1,48}$/.test(title)
-        && /[A-Za-z]/.test(title)
-        && !title.includes('...')
+        title
+        && title === title.trim()
+        && taskOverviewDisplayWidth(title) <= 48
     )
         return title;
     return 'Task overview unavailable';
@@ -171,10 +189,12 @@ class CodexDashboardButton extends PanelMenu.Button {
         this._dataProcess = null;
         this._dataTimeoutSource = 0;
         this._quotaReloadSource = 0;
+        this._taskOverviewReloadSource = 0;
 
         this._buildPanel();
         this._buildMenu();
         this._watchQuotaState();
+        this._watchTaskOverviewCache();
         this._readQuotaState();
 
         this._menuSignal = this.menu.connect(
@@ -213,6 +233,17 @@ class CodexDashboardButton extends PanelMenu.Button {
         }
         this._quotaMonitor?.cancel();
         this._quotaMonitor = null;
+        if (
+            this._taskOverviewMonitorSignal
+            && this._taskOverviewMonitor
+        ) {
+            this._taskOverviewMonitor.disconnect(
+                this._taskOverviewMonitorSignal
+            );
+            this._taskOverviewMonitorSignal = 0;
+        }
+        this._taskOverviewMonitor?.cancel();
+        this._taskOverviewMonitor = null;
         if (this._periodicSource) {
             GLib.Source.remove(this._periodicSource);
             this._periodicSource = 0;
@@ -220,6 +251,10 @@ class CodexDashboardButton extends PanelMenu.Button {
         if (this._quotaReloadSource) {
             GLib.Source.remove(this._quotaReloadSource);
             this._quotaReloadSource = 0;
+        }
+        if (this._taskOverviewReloadSource) {
+            GLib.Source.remove(this._taskOverviewReloadSource);
+            this._taskOverviewReloadSource = 0;
         }
     }
 
@@ -589,6 +624,39 @@ class CodexDashboardButton extends PanelMenu.Button {
         }
     }
 
+    _watchTaskOverviewCache() {
+        try {
+            const cacheFile =
+                Gio.File.new_for_path(TASK_OVERVIEW_CACHE_PATH);
+            this._taskOverviewMonitor = cacheFile.monitor_file(
+                Gio.FileMonitorFlags.WATCH_MOVES,
+                null
+            );
+            this._taskOverviewMonitorSignal =
+                this._taskOverviewMonitor.connect(
+                    'changed',
+                    () => {
+                        if (this._taskOverviewReloadSource)
+                            return;
+                        this._taskOverviewReloadSource = GLib.timeout_add(
+                            GLib.PRIORITY_DEFAULT,
+                            120,
+                            () => {
+                                this._taskOverviewReloadSource = 0;
+                                if (this.menu.isOpen)
+                                    this.loadData();
+                                return GLib.SOURCE_REMOVE;
+                            }
+                        );
+                    }
+                );
+        } catch (error) {
+            console.warn(
+                `[${this._extension.uuid}] task overview monitor: ${error}`
+            );
+        }
+    }
+
     setPanelLabel(text) {
         if (typeof text !== 'string' || !text.startsWith('Codex '))
             return;
@@ -687,7 +755,7 @@ class CodexDashboardButton extends PanelMenu.Button {
         let process;
         try {
             process = Gio.Subprocess.new(
-                ['/usr/bin/python3', '-I', DATA_HELPER],
+                ['/usr/bin/python3', '-I', '-B', DATA_HELPER],
                 Gio.SubprocessFlags.STDOUT_PIPE |
                     Gio.SubprocessFlags.STDERR_PIPE
             );

@@ -1,7 +1,7 @@
 {
   "uuid": "codex-dashboard@wenbo-wei",
   "name": "Codex Dashboard",
-  "description": "Shows Codex quota, token activity, and fixed-length conversation overviews in the GNOME top panel.",
+  "description": "Shows Codex quota, token activity, and stable task overviews in the GNOME top panel.",
   "shell-version": ["50"],
-  "version": 4
+  "version": 5
 }

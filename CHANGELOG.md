@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.5.0 - 2026-07-31
+
+- Replace the fixed task action-and-subject classifier with stable explicit
+  names, private cached Codex-generated summaries, and bounded first-request
+  fallbacks that preserve the source language, adding exactly one trailing
+  Unicode ellipsis when source text must be shortened.
+- Generate missing recent-root summaries in one non-blocking background batch
+  through the saved ChatGPT/Codex login, with read-only structured execution
+  and strict printable-ASCII output validation.
+- Obtain task evidence only from read-only thread-index fields without opening
+  session transcripts.
+- Keep summary cache updates private and atomic without storing raw task text,
+  and preserve fallbacks or prior valid summaries across provider failures,
+  invalid output, retries, process restarts, and desktop-session restarts.
+
 ## 1.4.0 - 2026-07-30
 
 - Replace raw first-request task titles with fixed-length English-only
