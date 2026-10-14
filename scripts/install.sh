@@ -35,7 +35,6 @@ icon_dir="$icon_theme_dir/scalable/apps"
 unit_dir="$xdg_config_home/systemd/user"
 dashboard_data_target="$local_bin_dir/codex-dashboard-data"
 quota_publisher_target="$local_bin_dir/codex-quota"
-task_overview_worker_target="$local_bin_dir/codex-dashboard-task-overviews"
 app_server_target="$dashboard_lib_dir/codex_app_server.py"
 codex_thread_index_target="$dashboard_lib_dir/codex_thread_index.py"
 quota_snapshot_target="$dashboard_lib_dir/quota_snapshot.py"
@@ -47,7 +46,6 @@ metadata_target="$extension_dir/metadata.json"
 stylesheet_target="$extension_dir/stylesheet.css"
 icon_target="$icon_dir/codex-dashboard-symbolic.svg"
 unit_target="$unit_dir/$systemd_unit_name"
-task_overview_unit_target="$unit_dir/$task_overview_unit_name"
 icon_cache_target="$icon_theme_dir/icon-theme.cache"
 legacy_was_present=false
 legacy_was_enabled=false
@@ -93,7 +91,6 @@ require_owned_directory "legacy extension directory" "$legacy_extension_dir"
 for owned_target in \
     "$dashboard_data_target" \
     "$quota_publisher_target" \
-    "$task_overview_worker_target" \
     "$app_server_target" \
     "$codex_thread_index_target" \
     "$quota_snapshot_target" \
@@ -105,7 +102,6 @@ for owned_target in \
     "$stylesheet_target" \
     "$icon_target" \
     "$unit_target" \
-    "$task_overview_unit_target" \
     "$icon_cache_target"
 do
     require_file_target "owned file target" "$owned_target"
@@ -226,9 +222,6 @@ backup_owned_targets() {
         "$quota_publisher_target" \
         "$owned_backup_dir/local-bin/codex-quota"
     backup_owned_target \
-        "$task_overview_worker_target" \
-        "$owned_backup_dir/local-bin/codex-dashboard-task-overviews"
-    backup_owned_target \
         "$app_server_target" \
         "$owned_backup_dir/lib/codex_app_server.py"
     backup_owned_target \
@@ -261,9 +254,6 @@ backup_owned_targets() {
     backup_owned_target \
         "$unit_target" \
         "$owned_backup_dir/systemd/codex-quota.service"
-    backup_owned_target \
-        "$task_overview_unit_target" \
-        "$owned_backup_dir/systemd/codex-task-overviews.service"
 }
 
 restore_owned_target() {
@@ -285,10 +275,6 @@ restore_owned_targets() {
     restore_owned_target \
         "$quota_publisher_target" \
         "$owned_backup_dir/local-bin/codex-quota" ||
-        restore_status=1
-    restore_owned_target \
-        "$task_overview_worker_target" \
-        "$owned_backup_dir/local-bin/codex-dashboard-task-overviews" ||
         restore_status=1
     restore_owned_target \
         "$app_server_target" \
@@ -333,10 +319,6 @@ restore_owned_targets() {
     restore_owned_target \
         "$unit_target" \
         "$owned_backup_dir/systemd/codex-quota.service" ||
-        restore_status=1
-    restore_owned_target \
-        "$task_overview_unit_target" \
-        "$owned_backup_dir/systemd/codex-task-overviews.service" ||
         restore_status=1
     return "$restore_status"
 }
@@ -558,10 +540,46 @@ abort_migration() {
     exit 1
 }
 
+# Run only after a successful install, so failed upgrades preserve old files.
+retire_task_overviews() {
+    if ! retired_unit_state=$(
+        systemctl --user show "$task_overview_unit_name" \
+            --property=LoadState --value
+    ); then
+        echo "warning: could not inspect the old task overview worker" >&2
+        return
+    fi
+    if [ "$retired_unit_state" != not-found ]; then
+        if ! systemctl --user disable --now --quiet "$task_overview_unit_name"; then
+            echo "warning: preserved old worker files because stopping failed" >&2
+            return
+        fi
+    fi
+    if ! rm -f -- \
+        "$local_bin_dir/codex-dashboard-task-overviews" \
+        "$unit_dir/$task_overview_unit_name"; then
+        echo "warning: could not remove the old task overview worker" >&2
+    fi
+    if ! systemctl --user daemon-reload; then
+        echo "warning: could not reload user units after worker cleanup" >&2
+    fi
+    retired_cache_dir="$xdg_cache_home/codex-dashboard"
+    if [ -L "$retired_cache_dir" ]; then
+        echo "warning: preserved symbolic-link task cache directory" >&2
+        return
+    fi
+    if ! rm -f -- \
+        "$retired_cache_dir/task-overviews.json" \
+        "$retired_cache_dir/task-overviews.lock"; then
+        echo "warning: could not remove the old task summary cache" >&2
+    fi
+    # Keep any files in the directory that are not owned by this migration.
+    rmdir -- "$retired_cache_dir" 2>/dev/null || true
+}
+
 stage_migration() {
     install_succeeded=true
-    # The installed compatibility worker is a no-op for older callers.
-    systemctl --user stop "$task_overview_unit_name" >/dev/null 2>&1 || true
+    retire_task_overviews
     echo "Codex Dashboard files staged as $extension_uuid."
     echo "The current GNOME Shell has not discovered the new UUID."
     echo "The legacy extension installation is preserved."
@@ -618,9 +636,6 @@ install -m 0755 \
 install -m 0755 \
     "$project_root/codex-quota/codex-quota" \
     "$local_bin_dir/codex-quota"
-install -m 0755 \
-    "$project_root/codex-quota/codex-dashboard-task-overviews" \
-    "$task_overview_worker_target"
 install -m 0644 \
     "$project_root/backend/codex_app_server.py" \
     "$project_root/backend/codex_thread_index.py" \
@@ -640,9 +655,6 @@ install -m 0644 \
 install -m 0644 \
     "$project_root/systemd/codex-quota.service" \
     "$unit_target"
-install -m 0644 \
-    "$project_root/systemd/codex-task-overviews.service" \
-    "$task_overview_unit_target"
 
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     icon_cache_update_attempted=true
@@ -734,11 +746,7 @@ systemd_restart_attempted=true
 systemctl --user restart "$systemd_unit_name"
 
 install_succeeded=true
-# Retire any worker started by the previous installation. The compatibility
-# entry point is now a no-op, including for stale queued service starts.
-if ! systemctl --user stop "$task_overview_unit_name"; then
-    echo "warning: could not stop the retired task overview worker" >&2
-fi
+retire_task_overviews
 if ! rm -f \
     "$legacy_extension_dir/extension.js" \
     "$legacy_extension_dir/dashboardModel.mjs" \

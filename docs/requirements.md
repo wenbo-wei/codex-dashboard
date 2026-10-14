@@ -40,8 +40,10 @@ This document records the current product constraints.
   open transcripts or read first-user-message fields for task overviews.
 - Never start a model, translate or regenerate a summary, read/write a parallel
   summary cache, or mutate Codex sessions while rendering the dashboard.
-- Retain the old worker command and unit as harmless compatibility no-ops;
-  installation stops any running old worker. Remove cache monitoring from the UI.
+- Do not ship the retired summary worker or its systemd unit. After a successful
+  upgrade, stop the old worker and remove its command, unit, cache, and lock.
+  Preserve unrelated files and do not follow a symlinked cache directory.
+  A failed install must leave legacy files intact for rollback.
 - A missing or unavailable index must preserve truthful availability reporting.
 
 ## Open-source delivery

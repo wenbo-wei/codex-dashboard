@@ -128,15 +128,6 @@ class NativeTasksTest(unittest.TestCase):
         self.assertEqual(self.database.read_bytes(), before)
         self.assertEqual(retired_cache.read_text(), '{invalid cache: must never be read}')
 
-    def test_retired_worker_is_noop_even_without_codex(self):
-        result = subprocess.run(
-            [sys.executable, str(ROOT / 'codex-quota/codex-dashboard-task-overviews')],
-            env={'PATH': '', 'CODEX_HOME': str(self.home)},
-            capture_output=True, timeout=5,
-        )
-        self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout + result.stderr, b'')
-
 
 if __name__ == '__main__':
     unittest.main()

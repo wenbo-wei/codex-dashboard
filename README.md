@@ -49,9 +49,6 @@ GNOME extension lists, shared icon cache, and user-service state.
   The helper also reads numeric token counters for the live Today estimate.
   A small aggregate runtime snapshot keeps that estimate monotonic without
   storing session text.
-- `codex-dashboard-task-overviews` and its systemd unit are compatibility no-ops
-  for older installations. The installer stops any old worker, and the dashboard
-  never requests a worker start.
 - `codex-quota` publishes live quota state for the extension.
 - Official historical token and quota data come from the locally installed
   Codex CLI app-server.
@@ -69,13 +66,15 @@ Subagents and archived sessions are excluded. Task identity and recency come
 from Codex's thread index. Titles receive only local display/privacy handling;
 legacy title fallbacks also filter injected instruction text. No task path
 reads transcripts, first-user-message fields, or the retired summary cache.
-Existing dashboard-owned summary caches are ignored and removed by uninstall.
+After a successful upgrade, the installer removes the retired summary worker,
+its systemd unit, and its old cache/lock files. Uninstall also cleans these up
+when removing an older installation.
 The numeric Today estimator remains separate from task titles.
 
 ## Repository layout
 
 - `extensions/codex-dashboard@wenbo-wei/` - GNOME Shell interface
-- `codex-quota/` - dashboard data, retired worker shim, and quota publisher
+- `codex-quota/` - dashboard data and quota publisher
 - `backend/` - shared task-overview, Codex app-server, and quota modules
 - `scripts/` and `systemd/` - installation and background units
 

@@ -6,7 +6,8 @@
 - Remove duplicate model summary generation, cache access, and cache monitoring.
 - Keep legacy title compatibility and show an honest placeholder for unnamed
   paginated sessions. Apply Codex renames on the next dashboard refresh.
-- Stop old summary workers during upgrade and keep their command as a no-op.
+- Remove the retired summary worker and unit from the release; successful
+  upgrades stop the old worker and clean up its installed files and cache.
 - Add synthetic regression checks for native names and read-only task refreshes.
 
 ## 1.5.0 - 2026-07-31

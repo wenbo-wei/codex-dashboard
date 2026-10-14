@@ -11,7 +11,6 @@ check:
 		backend/quota_sni.py \
 		backend/task_overviews.py \
 		codex-quota/codex-dashboard-data \
-		codex-quota/codex-dashboard-task-overviews \
 		codex-quota/codex-quota
 	$(PYTHON) -m json.tool \
 		extensions/codex-dashboard@wenbo-wei/metadata.json >/dev/null

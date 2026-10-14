@@ -14,7 +14,8 @@
 - Preserve native wording, including single-word names. Apply only display
   safety and sensitive-data handling. Bound names to 48 display columns and
   append one trailing Unicode ellipsis only when shortening is required.
-- Keep the retired worker entry point harmless for stale installations.
+- Do not reinstall the retired summary worker or its unit. Keep upgrade cleanup
+  limited to known dashboard-owned files and stop the worker before removal.
 - Use only synthetic task text in examples, tests, screenshots, and bug reports.
   Never commit a real Codex database or session contents. Verification must
   never invoke a real model.

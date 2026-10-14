@@ -1,9 +1,0 @@
-#!/usr/bin/python3
-"""Compatibility entry point for the retired summary worker.
-
-Task Overview now reads native Codex names. Older installations or queued
-service starts may still invoke this command; it deliberately does no work.
-"""
-
-if __name__ == "__main__":
-    raise SystemExit(0)

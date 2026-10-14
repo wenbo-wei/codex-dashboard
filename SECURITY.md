@@ -17,9 +17,9 @@ session transcripts, reads first-user-message fields, sends task text to a
 model, starts a Codex turn, or modifies Codex state. Names retain their original
 language with local display safety and sensitive-data handling.
 
-There is no active summary worker or summary cache. The old worker command and
-systemd unit remain harmless compatibility no-ops. Existing summary caches are
-ignored and removed by uninstall. Neither task text nor credentials should be
+There is no summary worker or summary cache. Successful upgrades stop and
+remove the old worker, its unit, and its cache/lock files. Uninstall also handles
+these legacy files. Neither task text nor credentials should be
 logged or included in bug reports. Quota and historical usage requests remain
 separate from task names and continue through the installed Codex backend.
 
