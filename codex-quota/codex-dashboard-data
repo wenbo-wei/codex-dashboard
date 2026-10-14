@@ -5,7 +5,7 @@ Quota values come from codex-quota's live account snapshot. Historical token
 totals come from Codex's official account usage endpoint; while its current-day
 bucket is pending, Today is estimated from local token counters and clearly
 marked as approximate. Recent task overviews come from the current Codex thread
-index and a private asynchronous summary cache.
+index, using Codex's own saved names.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ import math
 import os
 from pathlib import Path
 import sqlite3
-import subprocess
 import sys
 import tempfile
 import time
@@ -745,30 +744,8 @@ def _calibrated_today_estimate(
     return local_today, "local_thread_tokens_uncalibrated", None
 
 
-def _request_task_overview_refresh() -> None:
-    try:
-        subprocess.Popen(
-            [
-                "systemctl",
-                "--user",
-                "start",
-                "--no-block",
-                "codex-task-overviews.service",
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            start_new_session=True,
-        )
-    except OSError:
-        pass
-
-
 def _recent_tasks() -> tuple[list[dict[str, Any]], dict[str, int]]:
-    tasks, refresh_needed = recent_task_payload(_codex_home())
-    if refresh_needed:
-        _request_task_overview_refresh()
+    tasks = recent_task_payload(_codex_home())
     return tasks, {"recent": len(tasks)} if tasks else {}
 
 

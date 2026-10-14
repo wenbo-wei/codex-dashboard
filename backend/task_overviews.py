@@ -1,35 +1,22 @@
-"""Stable Task Overview selection and private model-summary caching."""
+"""Read native Codex task names without model calls or a summary cache."""
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from dataclasses import dataclass
 import datetime as dt
-import fcntl
-import hashlib
-import json
-import math
-import os
 from pathlib import Path
 import re
 import sqlite3
-import stat
-import tempfile
-import time
-from typing import Any, Iterator
+from typing import Any
 import unicodedata
 
 from codex_thread_index import open_thread_index
 
 
-TASK_OVERVIEW_PROTOCOL = "codex-dashboard-task-overview-v1"
 TASK_OVERVIEW_COLUMNS = 48
 RECENT_TASK_LIMIT = 5
-MAX_CACHE_ENTRIES = 256
-MAX_CACHE_BYTES = 1024 * 1024
 MAX_SEED_CHARACTERS = 4096
 MAX_SANITIZE_CHARACTERS = MAX_SEED_CHARACTERS + 1024
-RETRY_COOLDOWN_SECONDS = 15 * 60
 REDACTION = "[redacted]"
 UNAVAILABLE_OVERVIEW = "Task overview unavailable"
 
@@ -79,29 +66,6 @@ LEADING_GREETING = re.compile(
     r"[,\uff0c:\uff1a\u3002.!\uff01\s]+",
     re.IGNORECASE,
 )
-MARKDOWN_OVERVIEW = re.compile(
-    r"(?:^|\s)(?:#{1,6}|>|[-+*]|\d+[.)])(?:\s|$)|"
-    r"(?:^|\s)(?:-{3,}|\*{3,}|_{3,})(?:\s|$)|"
-    r"`|"
-    r"!?\[[^\]\r\n]*\]\([^)]+\)|"
-    r"!?\[[^\]\r\n]*\]\[[^\]\r\n]*\]|"
-    r"(?:^|\s)\[[^\]\r\n]+\]:\s*\S+|"
-    r"(?<!\w)(?:"
-    r"\*\*[^*\r\n]+\*\*|"
-    r"__[^_\r\n]+__|"
-    r"~~[^~\r\n]+~~|"
-    r"\*[^*\r\n]+\*|"
-    r"_[^_\r\n]+_"
-    r")(?!\w)",
-)
-HTML_OVERVIEW = re.compile(r"</?[A-Za-z][^>\r\n]*>")
-DANGLING_FUNCTION_WORD = re.compile(
-    r"\b(?:an|and|as|at|because|but|by|for|from|if|in|into|"
-    r"of|on|or|over|than|the|then|to|under|using|via|when|whether|"
-    r"while|with|without)$",
-    re.IGNORECASE,
-)
-LOWERCASE_DANGLING_ARTICLE = re.compile(r"\ba$")
 CREDENTIAL_CORE_PATTERN = (
     r"(?:(?:aws[_\s-]?)?(?:access[_\s-]?key(?:[_\s-]?id)?|"
     r"secret[_\s-]?access[_\s-]?key)|"
@@ -265,32 +229,11 @@ WORKFLOW_STATUS = re.compile(
     r"(?:changes?\s+applied|done)",
     re.IGNORECASE,
 )
-UNSAFE_OVERVIEW = re.compile(
-    r"://|[/\\@]|"
-    r"\b[0-9a-f]{24,}\b|"
-    r"\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b|"
-    r"(?<![A-Za-z0-9._+/=-])"
-    r"[A-Za-z0-9._+/=-]{32,}"
-    r"(?![A-Za-z0-9._+/=-])",
-    re.IGNORECASE,
-)
-SAFE_ERROR_CODE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 THREAD_ID = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
     r"[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
-SHA256 = re.compile(r"^[0-9a-f]{64}$")
-GENERIC_OVERVIEWS = frozenset({
-    "address requested task",
-    "assist with requested task",
-    "complete requested task",
-    "handle requested task",
-    "process requested task",
-    "summarize requested task",
-    "task overview unavailable",
-    "work on requested task",
-})
 SAFE_CREDENTIAL_CONTEXT_WORDS = frozenset({
     "authentication",
     "behavior",
@@ -366,14 +309,11 @@ REDACTED_ASSIGNMENT = re.compile(
 
 @dataclass(frozen=True)
 class RecentRootThread:
-    """One root thread and its stable, sanitized overview seed."""
+    """One root thread with its native display name and recency."""
 
     thread_id: str
-    explicit_name: str
-    seed: str
-    seed_sha256: str
+    title: str
     updated_at: str
-    source_fallback_seed: str = ""
 
 
 @dataclass(frozen=True, order=True)
@@ -660,10 +600,6 @@ def sanitize_seed(value: Any) -> str:
     return text[:MAX_SEED_CHARACTERS]
 
 
-def seed_digest(seed: str) -> str:
-    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
-
-
 def _sanitize_thread_seed(value: Any, thread_id: str) -> str:
     if (
         not isinstance(value, str)
@@ -692,35 +628,6 @@ def _is_meaningful_seed(value: str) -> bool:
     return bool(compact) and GENERIC_USER_REPLY.fullmatch(compact) is None
 
 
-def validate_overview(value: Any) -> str:
-    """Accept one mechanically safe overview within the display budget."""
-
-    if not isinstance(value, str):
-        return ""
-    title = value
-    if (
-        not title
-        or not title.isascii()
-        or not title.isprintable()
-        or title != " ".join(title.split())
-        or not any(character.isalpha() for character in title)
-        or len(title.split()) < 2
-        or DANGLING_FUNCTION_WORD.search(title)
-        or LOWERCASE_DANGLING_ARTICLE.search(title)
-        or not _is_meaningful_seed(title)
-        or "..." in title
-        or REDACTION in title.casefold()
-        or title.casefold() in GENERIC_OVERVIEWS
-        or _display_width(title) > TASK_OVERVIEW_COLUMNS
-        or MARKDOWN_OVERVIEW.search(title)
-        or HTML_OVERVIEW.search(title)
-        or _contains_sensitive_content(title)
-        or UNSAFE_OVERVIEW.search(title)
-    ):
-        return ""
-    return title
-
-
 def _bounded_source_text(value: str) -> str:
     if _display_width(value) <= TASK_OVERVIEW_COLUMNS:
         return value
@@ -745,15 +652,6 @@ def _bounded_source_text(value: str) -> str:
     )
     truncated = truncated.rstrip("\u2026")
     return f"{truncated}\u2026" if truncated else ""
-
-
-def source_fallback(seed: str) -> str:
-    """Return the bounded source-language request or an honest fallback."""
-
-    normalized = sanitize_seed(seed)
-    if not _is_meaningful_seed(normalized):
-        return UNAVAILABLE_OVERVIEW
-    return _bounded_source_text(normalized) or UNAVAILABLE_OVERVIEW
 
 
 def _iso_timestamp(value: Any) -> str:
@@ -812,6 +710,8 @@ def recent_root_threads(
                 "OR TRIM(thread_source) = '' "
                 "OR thread_source = 'user')"
             )
+        if "source" in columns:
+            conditions.append("(source IS NULL OR source NOT LIKE '%subagent%')")
         if "agent_path" in columns:
             conditions.append(
                 "(agent_path IS NULL OR TRIM(agent_path) = '')"
@@ -819,14 +719,14 @@ def recent_root_threads(
 
         expression = {
             column: column if column in columns else "NULL"
-            for column in ("name", "first_user_message", "title")
+            for column in ("name", "title", "history_mode")
         }
         where_clause = " AND ".join(conditions) or "1 = 1"
         rows = connection.execute(
             f"""
             SELECT id, {expression["name"]},
-                   {expression["first_user_message"]},
-                   {expression["title"]}, {time_column}
+                   {expression["title"]},
+                   {expression["history_mode"]}, {time_column}
             FROM threads
             WHERE {where_clause}
             ORDER BY {time_column} DESC, id DESC
@@ -838,37 +738,22 @@ def recent_root_threads(
     if bounded_limit == 0:
         return []
     result: list[RecentRootThread] = []
-    for thread_id, name, first_message, title, updated_at in rows:
+    for thread_id, name, title, history_mode, updated_at in rows:
         identifier = str(thread_id)
         if THREAD_ID.fullmatch(identifier) is None:
             continue
-        sanitized_name = _sanitize_thread_seed(name, identifier)
-        if not _is_meaningful_seed(sanitized_name):
-            sanitized_name = ""
-        explicit_name = validate_overview(name) if sanitized_name else ""
-        first_request = _sanitize_thread_seed(first_message, identifier)
-        if not _is_meaningful_seed(first_request):
-            first_request = ""
-        seed = next(
-            (
-                candidate
-                for candidate in (
-                    sanitized_name,
-                    first_request,
-                    _sanitize_thread_seed(title, identifier),
-                )
-                if candidate and _is_meaningful_seed(candidate)
-            ),
-            "",
-        )
+        display_name = native_name(name)
+        # In current Codex, paginated threads use `name`. Their `title` is
+        # search metadata, not a replacement for a name that is still pending.
+        if not display_name and history_mode != "paginated":
+            legacy_title = _sanitize_thread_seed(title, identifier)
+            if _is_meaningful_seed(legacy_title):
+                display_name = _bounded_source_text(legacy_title)
         result.append(
             RecentRootThread(
                 thread_id=identifier,
-                explicit_name=explicit_name,
-                seed=seed,
-                seed_sha256=seed_digest(seed),
+                title=display_name or UNAVAILABLE_OVERVIEW,
                 updated_at=_iso_timestamp(updated_at),
-                source_fallback_seed=first_request,
             )
         )
         if len(result) >= bounded_limit:
@@ -876,326 +761,28 @@ def recent_root_threads(
     return result
 
 
-def default_cache_directory() -> Path:
-    cache_home = os.environ.get("XDG_CACHE_HOME")
-    if cache_home:
-        path = Path(cache_home)
-        if not path.is_absolute():
-            raise ValueError("XDG_CACHE_HOME must be an absolute path")
-    else:
-        path = Path.home() / ".cache"
-    return path / "codex-dashboard"
+
+def native_name(value: Any) -> str:
+    """Keep Codex's wording and language, with display and privacy safeguards."""
+
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(_strip_unsafe_unicode(
+        unicodedata.normalize("NFC", value[:MAX_SANITIZE_CHARACTERS])
+    ).split())
+    if _contains_sensitive_content(unicodedata.normalize("NFKC", text)):
+        text = sanitize_seed(text)
+    return _bounded_source_text(text)
 
 
-def default_cache_path() -> Path:
-    return default_cache_directory() / "task-overviews.json"
+def recent_task_payload(codex_home: Path) -> list[dict[str, str]]:
+    """Return native task metadata; never start work or read a summary cache."""
 
-
-def _empty_cache() -> dict[str, Any]:
-    return {"protocol": TASK_OVERVIEW_PROTOCOL, "entries": {}}
-
-
-def _valid_cache_entry(thread_id: str, value: Any) -> dict[str, Any] | None:
-    if THREAD_ID.fullmatch(thread_id) is None or not isinstance(value, dict):
-        return None
-    if value.get("protocol") != TASK_OVERVIEW_PROTOCOL:
-        return None
-    digest = value.get("seed_sha256")
-    if not isinstance(digest, str) or not SHA256.fullmatch(digest):
-        return None
-    touched_at = value.get("touched_at")
-    if (
-        isinstance(touched_at, bool)
-        or not isinstance(touched_at, (int, float))
-        or not math.isfinite(float(touched_at))
-        or touched_at < 0
-    ):
-        return None
-
-    title = validate_overview(value.get("title"))
-    retry_after = value.get("retry_after", 0)
-    error_code = value.get("error_code", "")
-    if title:
-        return {
-            "protocol": TASK_OVERVIEW_PROTOCOL,
-            "seed_sha256": digest,
-            "title": title,
-            "touched_at": float(touched_at),
+    return [
+        {
+            "title": thread.title,
+            "status": "recent",
+            "updated_at": thread.updated_at,
         }
-    if (
-        isinstance(retry_after, bool)
-        or not isinstance(retry_after, (int, float))
-        or not math.isfinite(float(retry_after))
-        or retry_after < 0
-        or not isinstance(error_code, str)
-        or SAFE_ERROR_CODE.fullmatch(error_code) is None
-    ):
-        return None
-    return {
-        "protocol": TASK_OVERVIEW_PROTOCOL,
-        "seed_sha256": digest,
-        "retry_after": float(retry_after),
-        "error_code": error_code,
-        "touched_at": float(touched_at),
-    }
-
-
-class TaskOverviewCache:
-    """Read and atomically update the bounded private overview cache."""
-
-    def __init__(self, path: Path | None = None) -> None:
-        self.path = path or default_cache_path()
-        self.directory = self.path.parent
-        self.lock_path = self.directory / "task-overviews.lock"
-
-    def _ensure_private_directory(self) -> None:
-        self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        metadata = self.directory.lstat()
-        if (
-            not stat.S_ISDIR(metadata.st_mode)
-            or stat.S_ISLNK(metadata.st_mode)
-            or metadata.st_uid != os.getuid()
-        ):
-            raise OSError("Task Overview cache directory is invalid")
-        os.chmod(self.directory, 0o700)
-
-    def load(self) -> dict[str, Any]:
-        descriptor = -1
-        try:
-            flags = os.O_RDONLY
-            if hasattr(os, "O_NOFOLLOW"):
-                flags |= os.O_NOFOLLOW
-            descriptor = os.open(self.path, flags)
-            metadata = os.fstat(descriptor)
-            if (
-                not stat.S_ISREG(metadata.st_mode)
-                or metadata.st_uid != os.getuid()
-                or metadata.st_size > MAX_CACHE_BYTES
-                or metadata.st_mode & 0o077
-            ):
-                return _empty_cache()
-            with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
-                descriptor = -1
-                payload = json.load(stream)
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            return _empty_cache()
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-        if (
-            not isinstance(payload, dict)
-            or payload.get("protocol") != TASK_OVERVIEW_PROTOCOL
-            or not isinstance(payload.get("entries"), dict)
-        ):
-            return _empty_cache()
-
-        entries: dict[str, Any] = {}
-        for thread_id, value in payload["entries"].items():
-            if not isinstance(thread_id, str):
-                continue
-            entry = _valid_cache_entry(thread_id, value)
-            if entry is not None:
-                entries[thread_id] = entry
-        return {"protocol": TASK_OVERVIEW_PROTOCOL, "entries": entries}
-
-    def title_for(
-        self,
-        thread: RecentRootThread,
-        cache: dict[str, Any] | None = None,
-    ) -> str:
-        if not thread.seed:
-            return ""
-        current = cache or self.load()
-        entry = current.get("entries", {}).get(thread.thread_id)
-        if (
-            not isinstance(entry, dict)
-            or entry.get("protocol") != TASK_OVERVIEW_PROTOCOL
-            or entry.get("seed_sha256") != thread.seed_sha256
-        ):
-            return ""
-        return validate_overview(entry.get("title"))
-
-    def generation_due(
-        self,
-        thread: RecentRootThread,
-        cache: dict[str, Any],
-        *,
-        now: float | None = None,
-    ) -> bool:
-        if not thread.seed:
-            return False
-        entry = cache.get("entries", {}).get(thread.thread_id)
-        if not isinstance(entry, dict):
-            return True
-        if (
-            entry.get("protocol") != TASK_OVERVIEW_PROTOCOL
-            or entry.get("seed_sha256") != thread.seed_sha256
-        ):
-            return True
-        if validate_overview(entry.get("title")):
-            return False
-        retry_after = entry.get("retry_after", 0)
-        moment = time.time() if now is None else float(now)
-        return isinstance(retry_after, (int, float)) and retry_after <= moment
-
-    def write_successes(
-        self,
-        cache: dict[str, Any],
-        threads: list[RecentRootThread],
-        titles: dict[str, str],
-        *,
-        now: float | None = None,
-    ) -> None:
-        moment = time.time() if now is None else float(now)
-        entries = dict(cache.get("entries", {}))
-        for thread in threads:
-            title = validate_overview(titles.get(thread.thread_id))
-            if not title:
-                raise ValueError("Task Overview result is invalid")
-            entries[thread.thread_id] = {
-                "protocol": TASK_OVERVIEW_PROTOCOL,
-                "seed_sha256": thread.seed_sha256,
-                "title": title,
-                "touched_at": moment,
-            }
-        self._write(entries)
-
-    def write_failures(
-        self,
-        cache: dict[str, Any],
-        threads: list[RecentRootThread],
-        error_code: str,
-        *,
-        now: float | None = None,
-    ) -> None:
-        if SAFE_ERROR_CODE.fullmatch(error_code) is None:
-            raise ValueError("Task Overview failure code is invalid")
-        moment = time.time() if now is None else float(now)
-        entries = dict(cache.get("entries", {}))
-        for thread in threads:
-            entries[thread.thread_id] = {
-                "protocol": TASK_OVERVIEW_PROTOCOL,
-                "seed_sha256": thread.seed_sha256,
-                "retry_after": moment + RETRY_COOLDOWN_SECONDS,
-                "error_code": error_code,
-                "touched_at": moment,
-            }
-        self._write(entries)
-
-    def _write(self, entries: dict[str, Any]) -> None:
-        self._ensure_private_directory()
-        ordered = sorted(
-            entries.items(),
-            key=lambda item: float(item[1].get("touched_at", 0)),
-            reverse=True,
-        )[:MAX_CACHE_ENTRIES]
-        payload = {
-            "protocol": TASK_OVERVIEW_PROTOCOL,
-            "entries": dict(ordered),
-        }
-        encoded = (
-            json.dumps(
-                payload,
-                ensure_ascii=True,
-                separators=(",", ":"),
-                sort_keys=True,
-            )
-            + "\n"
-        ).encode("utf-8")
-        if len(encoded) > MAX_CACHE_BYTES:
-            raise OSError("Task Overview cache is too large")
-
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=".task-overviews-",
-            suffix=".tmp",
-            dir=self.directory,
-        )
-        temporary_path = Path(temporary_name)
-        try:
-            os.fchmod(descriptor, 0o600)
-            with os.fdopen(descriptor, "wb", closefd=True) as stream:
-                stream.write(encoded)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary_path, self.path)
-            os.chmod(self.path, 0o600)
-            directory_descriptor = os.open(
-                self.directory,
-                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
-            )
-            try:
-                os.fsync(directory_descriptor)
-            finally:
-                os.close(directory_descriptor)
-        finally:
-            try:
-                temporary_path.unlink()
-            except FileNotFoundError:
-                pass
-
-    @contextmanager
-    def exclusive(self, *, blocking: bool = False) -> Iterator[bool]:
-        """Hold the worker lock and report false when another worker owns it."""
-
-        self._ensure_private_directory()
-        flags = os.O_RDWR | os.O_CREAT
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        descriptor = os.open(self.lock_path, flags, 0o600)
-        metadata = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_uid != os.getuid()
-        ):
-            os.close(descriptor)
-            raise OSError("Task Overview lock file is invalid")
-        os.fchmod(descriptor, 0o600)
-        operation = fcntl.LOCK_EX
-        if not blocking:
-            operation |= fcntl.LOCK_NB
-        acquired = False
-        try:
-            try:
-                fcntl.flock(descriptor, operation)
-                acquired = True
-            except BlockingIOError:
-                pass
-            yield acquired
-        finally:
-            if acquired:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-            os.close(descriptor)
-
-
-def recent_task_payload(
-    codex_home: Path,
-    cache: TaskOverviewCache | None = None,
-) -> tuple[list[dict[str, str]], bool]:
-    """Return display tasks and whether a background cache refresh is useful."""
-
-    current_cache = cache or TaskOverviewCache()
-    snapshot = current_cache.load()
-    tasks: list[dict[str, str]] = []
-    refresh_needed = False
-    for thread in recent_root_threads(codex_home):
-        explicit = validate_overview(thread.explicit_name)
-        cached = current_cache.title_for(thread, snapshot)
-        title = (
-            explicit
-            or cached
-            or source_fallback(thread.source_fallback_seed)
-        )
-        if (
-            not explicit
-            and not cached
-            and current_cache.generation_due(thread, snapshot)
-        ):
-            refresh_needed = True
-        tasks.append(
-            {
-                "title": title,
-                "status": "recent",
-                "updated_at": thread.updated_at,
-            }
-        )
-    return tasks, refresh_needed
+        for thread in recent_root_threads(codex_home)
+    ]

@@ -23,3 +23,4 @@ check:
 	sh -n \
 		scripts/install.sh \
 		scripts/uninstall.sh
+	$(PYTHON) -m unittest discover -s tests -v

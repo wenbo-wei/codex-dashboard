@@ -11,31 +11,17 @@ Please use GitHub's private vulnerability reporting for
 content, account details, filesystem paths, or reproduction data that may be
 private.
 
-The dashboard obtains task evidence only from read-only fields in the local
-Codex thread index, including the explicit name, first substantive root request,
-and a legacy title used only as a last-resort generation seed. The dashboard and
-worker never open session transcripts. On a summary cache miss, a background
-worker sends only the bounded, sanitized stable task seed and an opaque
-per-batch alias to Codex through the locally installed CLI and the user's saved
-ChatGPT/Codex login. Real root-thread IDs are mapped locally and never enter the
-request. This request may consume Codex quota. The full transcript, injected
-instructions, environment content, handoffs, subagent content, and assistant
-output are not sent.
+The dashboard reads native task names and legacy title metadata from the local
+Codex thread index through a read-only connection. Task Overview never opens
+session transcripts, reads first-user-message fields, sends task text to a
+model, starts a Codex turn, or modifies Codex state. Names retain their original
+language with local display safety and sensitive-data handling.
 
-The worker runs one bounded batch in an ephemeral working directory with
-read-only sandboxing, non-interactive execution, structured output validation,
-and a fixed timeout. Credentials remain under Codex's ownership and are not
-copied into dashboard files. Failure, timeout, invalid output, or unavailable
-authentication leaves the source-language fallback and any previous valid
-summary intact.
+There is no active summary worker or summary cache. The old worker command and
+systemd unit remain harmless compatibility no-ops. Existing summary caches are
+ignored and removed by uninstall. Neither task text nor credentials should be
+logged or included in bug reports. Quota and historical usage requests remain
+separate from task names and continue through the installed Codex backend.
 
-The private summary cache is stored under the user's XDG cache directory and is
-atomically replaced. Its directory and file use private permissions. Each entry
-stores a validated summary, seed digest, protocol version, and bounded retry or
-retention metadata. It does not store raw task text, transcript text, prompts,
-credentials, or raw model responses. Neither source text nor generated
-sensitive material may appear in logs.
-
-A report should state which data source, worker stage, or cache operation is
-involved without attaching a real Codex database, session log, cache, prompt,
-or generated summary.
+A report should identify the affected data source or display operation without
+attaching a real database, session log, credential, or task title.

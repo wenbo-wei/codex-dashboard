@@ -560,6 +560,8 @@ abort_migration() {
 
 stage_migration() {
     install_succeeded=true
+    # The installed compatibility worker is a no-op for older callers.
+    systemctl --user stop "$task_overview_unit_name" >/dev/null 2>&1 || true
     echo "Codex Dashboard files staged as $extension_uuid."
     echo "The current GNOME Shell has not discovered the new UUID."
     echo "The legacy extension installation is preserved."
@@ -732,6 +734,11 @@ systemd_restart_attempted=true
 systemctl --user restart "$systemd_unit_name"
 
 install_succeeded=true
+# Retire any worker started by the previous installation. The compatibility
+# entry point is now a no-op, including for stale queued service starts.
+if ! systemctl --user stop "$task_overview_unit_name"; then
+    echo "warning: could not stop the retired task overview worker" >&2
+fi
 if ! rm -f \
     "$legacy_extension_dir/extension.js" \
     "$legacy_extension_dir/dashboardModel.mjs" \

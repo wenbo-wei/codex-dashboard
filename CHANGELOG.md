@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Reuse native Codex session names in their original language for Task Overview.
+- Remove duplicate model summary generation, cache access, and cache monitoring.
+- Keep legacy title compatibility and show an honest placeholder for unnamed
+  paginated sessions. Apply Codex renames on the next dashboard refresh.
+- Stop old summary workers during upgrade and keep their command as a no-op.
+- Add synthetic regression checks for native names and read-only task refreshes.
+
 ## 1.5.0 - 2026-07-31
 
 - Replace the fixed task action-and-subject classifier with stable explicit
